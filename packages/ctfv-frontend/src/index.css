@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+@layer base {
+  :root {
+    color-scheme: dark;
+    --background: 240 13% 4%;
+    --foreground: 240 10% 94%;
+    --card: 240 14% 7%;
+    --card-foreground: 240 10% 94%;
+    --popover: 240 14% 7%;
+    --popover-foreground: 240 10% 94%;
+    --primary: 352 71% 47%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 12% 11%;
+    --secondary-foreground: 240 10% 88%;
+    --muted: 240 12% 11%;
+    --muted-foreground: 240 7% 61%;
+    --accent: 240 12% 14%;
+    --accent-foreground: 240 10% 94%;
+    --destructive: 352 71% 47%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 10% 15%;
+    --input: 240 10% 15%;
+    --ring: 352 78% 57%;
+    --chart-1: 352 78% 57%;
+    --chart-2: 43 64% 56%;
+    --chart-3: 240 7% 61%;
+    --chart-4: 0 0% 94%;
+    --chart-5: 240 10% 35%;
+    --radius: 0.75rem;
+    --font-sans: "Inter", sans-serif;
+    --font-mono: "JetBrains Mono", monospace;
+  }
+  .dark {
+    --background: 240 13% 4%;
+    --foreground: 240 10% 94%;
+    --card: 240 14% 7%;
+    --card-foreground: 240 10% 94%;
+    --popover: 240 14% 7%;
+    --popover-foreground: 240 10% 94%;
+    --primary: 352 71% 47%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 12% 11%;
+    --secondary-foreground: 240 10% 88%;
+    --muted: 240 12% 11%;
+    --muted-foreground: 240 7% 61%;
+    --accent: 240 12% 14%;
+    --accent-foreground: 240 10% 94%;
+    --destructive: 352 71% 47%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 10% 15%;
+    --input: 240 10% 15%;
+    --ring: 352 78% 57%;
+  }
+}
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+    background: #0a0a0c;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  code,
+  pre,
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+  ::selection {
+    color: #fff;
+    background: #8e1622;
+  }
+}

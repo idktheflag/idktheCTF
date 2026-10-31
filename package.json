@@ -1,0 +1,12 @@
+{
+  "name": "ctfv",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun --filter \"*\" dev",
+    "build": "bun run --filter ctfv-frontend build",
+    "deploy": "bun run --filter ctfv-frontend build && bun run --filter ctfv-backend deploy"
+  }
+}

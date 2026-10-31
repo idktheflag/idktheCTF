@@ -1,0 +1,63 @@
+name = "ctfv-backend"
+main = "src/index.ts"
+workers_dev = false
+compatibility_date = "2026-10-30"
+compatibility_flags = [ "nodejs_compat" ]
+
+[[ratelimits]]
+name = "AUTH_LOGIN_LIMITER"
+namespace_id = "186431701"
+
+  [ratelimits.simple]
+  limit = 12
+  period = 60
+
+[[ratelimits]]
+name = "AUTH_RECOVERY_LIMITER"
+namespace_id = "186431702"
+
+  [ratelimits.simple]
+  limit = 4
+  period = 60
+
+[[routes]]
+pattern = "ctf.idktheflag.sh"
+custom_domain = true
+
+[assets]
+directory = "../ctfv-frontend/dist"
+not_found_handling = "single-page-application"
+run_worker_first = [ "/api/*" ]
+
+[vars]
+APP_URL = "https://ctf.idktheflag.sh"
+
+[[send_email]]
+name = "EMAIL"
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "ctfv-challenge-files"
+
+# [vars]
+# MY_VAR = "my-variable"
+
+# [[kv_namespaces]]
+# binding = "MY_KV_NAMESPACE"
+# id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# [[r2_buckets]]
+# binding = "MY_BUCKET"
+# bucket_name = "my-bucket"
+
+[[d1_databases]]
+binding = "DATABASE"
+database_name = "ctfV-db"
+database_id = "ad1f715a-f293-4692-a216-0f202d5b3cef"
+migrations_dir = "drizzle"
+
+# [ai]
+# binding = "AI"
+
+[observability]
+enabled = true
