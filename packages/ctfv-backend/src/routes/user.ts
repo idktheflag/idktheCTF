@@ -6,7 +6,7 @@ import { JwtVariables, sign, verify } from "hono/jwt";
 import { getDB } from "..";
 import { Bindings } from "../../env";
 import * as schema from "../db/schema";
-import { authMiddleware } from "../middlewares/auth";
+import { authMiddleware, unverifiedAuthMiddleware } from "../middlewares/auth";
 import { isRateLimited } from "../utils/rate-limit";
 import { createSecureToken, sha256Hex } from "../utils/secure-token";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../utils/send-mail";
@@ -16,6 +16,8 @@ import { isUniqueConstraintError } from "../utils/sqlite-error";
 type Variables = JwtVariables;
 
 const userRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
+const registrationAcceptedMessage =
+  "If registration was completed, sign in and follow the email verification steps.";
 
 userRouter.post("/auth/register", async (c) => {
   try {
@@ -33,14 +35,6 @@ userRouter.post("/auth/register", async (c) => {
     }
     const normalizedUsername = isOwnerAccount ? `organizer_${crypto.randomUUID()}` : requestedUsername;
 
-    const existingUser = await db.query.users.findFirst({
-      where: eq(schema.users.email, normalizedEmail),
-    });
-
-    if (existingUser) {
-      return c.json({ error: "User already exists" }, 400);
-    }
-
     const event = await db.query.eventSettings.findFirst();
     if (!event) return c.json({ error: "This CTF has not been set up yet" }, 403);
     if (!isOwnerAccount && event.registrationMode !== "public" && typeof invitationToken !== "string") {
@@ -52,47 +46,47 @@ userRouter.post("/auth/register", async (c) => {
       return c.json({ error: `Use an email address from: ${domains.join(", ")}` }, 400);
     }
 
+    let invitation: { id: string; email: string } | null = null;
+    let invitationTokenHash = "";
+    if (typeof invitationToken === "string" && !isOwnerAccount) {
+      invitationTokenHash = await sha256Hex(invitationToken);
+      invitation = await c.env.DATABASE.prepare("SELECT id, email FROM registration_invitations WHERE token_hash = ? AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ?").bind(invitationTokenHash, Date.now()).first<{ id: string; email: string }>();
+      if (!invitation || invitation.email !== normalizedEmail) return c.json({ error: "Invitation is invalid, expired, or belongs to a different email." }, 400);
+    }
+
     if (!c.env.AUTH_SECRET) return c.json({ error: "Authentication is not configured" }, 503);
 
+    const existingUsername = await db.query.users.findFirst({
+      where: eq(schema.users.username, normalizedUsername),
+    });
+    if (existingUsername) {
+      return c.json({ error: "That username is already in use. Choose another." }, 409);
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const existingUser = await db.query.users.findFirst({
+      where: eq(schema.users.email, normalizedEmail),
+    });
+    if (existingUser) return c.json({ message: registrationAcceptedMessage });
+
     let newUser: typeof schema.users.$inferSelect | undefined;
-    if (typeof invitationToken === "string" && !isOwnerAccount) {
-      const tokenHash = await sha256Hex(invitationToken);
-      const invitation = await c.env.DATABASE.prepare("SELECT id, email FROM registration_invitations WHERE token_hash = ? AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ?").bind(tokenHash, Date.now()).first<{ id: string; email: string }>();
-      if (!invitation || invitation.email !== normalizedEmail) return c.json({ error: "Invitation is invalid, expired, or belongs to a different email." }, 400);
-      const hashedPassword = await bcrypt.hash(password, 10);
+    if (invitation) {
       const now = Date.now();
       const results = await c.env.DATABASE.batch([
-        c.env.DATABASE.prepare("UPDATE registration_invitations SET redeemed_at = ? WHERE id = ? AND token_hash = ? AND email = ? AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ?").bind(now, invitation.id, tokenHash, normalizedEmail, now),
+        c.env.DATABASE.prepare("UPDATE registration_invitations SET redeemed_at = ? WHERE id = ? AND token_hash = ? AND email = ? AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ?").bind(now, invitation.id, invitationTokenHash, normalizedEmail, now),
         c.env.DATABASE.prepare("INSERT INTO user (id, name, email, password, isAdmin, emailVerified, is_banned) SELECT ?, ?, ?, ?, 0, 0, 0 WHERE EXISTS (SELECT 1 FROM registration_invitations WHERE id = ? AND redeemed_at = ? AND email = ?)").bind(crypto.randomUUID(), normalizedUsername, normalizedEmail, hashedPassword, invitation.id, now, normalizedEmail),
       ]);
       if (!results[0]?.meta.changes || !results[1]?.meta.changes) return c.json({ error: "Invitation was already used or is no longer valid." }, 400);
       newUser = await db.query.users.findFirst({ where: eq(schema.users.email, normalizedEmail) });
     } else {
-      const hashedPassword = await bcrypt.hash(password, 10);
       newUser = await db.insert(schema.users).values({ email: normalizedEmail, password: hashedPassword, username: normalizedUsername, isAdmin: false }).returning().get();
     }
     if (!newUser) return c.json({ error: "Could not create account" }, 500);
-
-    const token = await sign(
-      {
-        userId: newUser.id,
-        authVersion: newUser.authVersion,
-        email: newUser.email,
-        ...(isOwnerAccount ? {} : { username: newUser.username }),
-        emailVerified: newUser.emailVerified,
-        isAdmin: false,
-        exp: Math.floor(Date.now() / 1000) + 12 * 60 * 60,
-      },
-      c.env.AUTH_SECRET,
-    );
-
-    return c.json({ token });
+    return c.json({ message: registrationAcceptedMessage });
   } catch (error) {
-    if (isUniqueConstraintError(error, "user.name")) {
-      return c.json({ error: "That username is already in use. Choose another." }, 409);
-    }
+    if (isUniqueConstraintError(error, "user.name")) return c.json({ message: registrationAcceptedMessage });
     if (isUniqueConstraintError(error, "user.email")) {
-      return c.json({ error: "An account already exists for that email." }, 409);
+      return c.json({ message: registrationAcceptedMessage });
     }
     console.error("Participant registration failed");
     return c.json({ error: "Internal server error" }, 500);
@@ -211,31 +205,22 @@ userRouter.post("/auth/password-reset/complete", async (c) => {
   return c.json({ message: "Password changed. Sign in with your new password." });
 });
 
-userRouter.post("/auth/send-verify-email", async (c) => {
+userRouter.post("/auth/send-verify-email", unverifiedAuthMiddleware, async (c) => {
   const db = getDB(c);
-  const input = await readJsonRecord(c.req);
-  if (!input) return c.json({ error: "Send a valid JSON object" }, 400);
-  const email = typeof input.email === "string" ? input.email.trim().toLowerCase() : "";
-  if (email.length > 254 || !/^\S+@\S+\.\S+$/.test(email)) return c.json({ error: "Enter a valid email address" }, 400);
-  if (await isRateLimited(c, c.env.AUTH_RECOVERY_LIMITER, "verification-email", email)) return c.json({ error: "Too many requests. Wait a minute and try again." }, 429);
+  const payload = c.get("jwtPayload");
 
   const user = await db.query.users.findFirst({
-    where: eq(schema.users.email, email),
+    where: eq(schema.users.id, payload.userId as string),
   });
 
-  if (!user) {
-    return c.json({ error: "User not found" }, 404);
-  }
-
-  if (user.emailVerified) {
-    return c.json({ error: "Email already verified" }, 400);
-  }
+  if (!user || user.isBanned) return c.json({ error: "Account is unavailable" }, 403);
+  if (user.emailVerified) return c.json({ error: "Email already verified" }, 400);
+  if (await isRateLimited(c, c.env.AUTH_RECOVERY_LIMITER, "verification-email", user.email)) return c.json({ error: "Too many requests. Wait a minute and try again." }, 429);
 
   if (
     user.lastVerificationEmailSent &&
     user.lastVerificationEmailSent.getTime() > Date.now() - 60 * 1000
   ) {
-    c.header("Retry-After", "60");
     return c.json({ error: "A verification email was recently requested. Wait a minute before trying again." }, 429);
   }
 
@@ -245,7 +230,6 @@ userRouter.post("/auth/send-verify-email", async (c) => {
       or(isNull(schema.users.lastVerificationEmailSent), lte(schema.users.lastVerificationEmailSent, new Date(reservedAt.getTime() - 60_000)))))
     .returning({ id: schema.users.id }).get();
   if (!reserved) {
-    c.header("Retry-After", "60");
     return c.json({ error: "A verification request is already pending or the account changed. Wait a minute before trying again." }, 429);
   }
   const releaseReservation = () => db.update(schema.users).set({ lastVerificationEmailSent: null })
@@ -322,8 +306,6 @@ userRouter.get("/", async (c) => {
     columns: {
       id: true,
       username: true,
-      rollNo: true,
-      instituteName: true,
       website: true,
       affiliation: true,
       country: true,
@@ -364,7 +346,8 @@ userRouter.get("/:id", authMiddleware, async (c) => {
     const account = await db.select({ email: schema.users.email }).from(schema.users).where(eq(schema.users.id, userId)).get();
     return c.json({ ...user, email: account?.email });
   }
-  return c.json(user);
+  const { rollNo: _rollNo, instituteName: _instituteName, ...publicProfile } = user;
+  return c.json(publicProfile);
 });
 
 // Update user profile

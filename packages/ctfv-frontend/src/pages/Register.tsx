@@ -2,7 +2,7 @@ import { useAuth } from "@/auth-context";
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import React, { useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import {
   Card,
@@ -21,9 +21,9 @@ export const Register: React.FC = () => {
   const { register } = useAuth();
   const [params] = useSearchParams();
   const invitationToken = params.get("invite") || undefined;
-  const navigate = useNavigate();
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [registrationSubmitted, setRegistrationSubmitted] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,7 +31,7 @@ export const Register: React.FC = () => {
     setError(null);
     try {
       await register(username, email, password, invitationToken);
-      navigate("/send-email");
+      setRegistrationSubmitted(true);
     } catch (error) {
       console.error("Registration failed:", error);
       setError("Registration failed." + error);
@@ -51,6 +51,16 @@ export const Register: React.FC = () => {
         </CardDescription>
       </CardHeader>
       <CardContent>
+        {registrationSubmitted ? (
+          <div className="space-y-4 text-center" role="status">
+            <p className="text-sm text-muted-foreground">
+              If registration was completed, sign in and follow the email verification steps. If you already have an account, sign in or reset your password.
+            </p>
+            <Button asChild className="w-full">
+              <Link to="/login">Continue to sign in</Link>
+            </Button>
+          </div>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
             <label
@@ -121,6 +131,7 @@ export const Register: React.FC = () => {
             )}
           </Button>
         </form>
+        )}
       </CardContent>
       <CardFooter className="justify-center">
         <p className="text-sm text-muted-foreground dark:text-muted-foreground">

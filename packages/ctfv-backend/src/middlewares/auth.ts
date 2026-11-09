@@ -5,10 +5,10 @@ import { Bindings } from "../../env";
 
 type Variables = JwtVariables;
 
-export const authMiddleware: MiddlewareHandler<{
+const createAuthMiddleware = (allowUnverified: boolean): MiddlewareHandler<{
   Bindings: Bindings;
   Variables: Variables;
-}> = async (c, next) => {
+}> => async (c, next) => {
   const authHeader = c.req.header("Authorization");
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return c.json({ error: "Unauthorized" }, 401);
@@ -30,10 +30,17 @@ export const authMiddleware: MiddlewareHandler<{
   if (Boolean(account.isAdmin) !== (payload.isAdmin === true)) {
     return c.json({ error: "Account permissions changed. Sign in again." }, 401);
   }
-  if (!account.emailVerified || payload.emailVerified !== true) {
+  const tokenEmailVerified = payload.emailVerified === true;
+  if (
+    (!allowUnverified && (!account.emailVerified || !tokenEmailVerified)) ||
+    (allowUnverified && Boolean(account.emailVerified) !== tokenEmailVerified)
+  ) {
     return c.json({ error: "Verify your email before continuing", code: "EMAIL_NOT_VERIFIED" }, 403);
   }
 
   c.set("jwtPayload", payload);
   await next();
 };
+
+export const authMiddleware = createAuthMiddleware(false);
+export const unverifiedAuthMiddleware = createAuthMiddleware(true);

@@ -4,7 +4,7 @@ import { sign } from "hono/jwt";
 import { createDatabase, loadWorker } from "./helpers.mjs";
 const app = await loadWorker();
 const secret = "test-only-auth-secret-with-at-least-32-characters";
-for (const path of ["register", "login", "send-verify-email"]) {
+for (const path of ["register", "login"]) {
   test(`${path} rejects non-object or malformed JSON without a server error`, async () => {
     const db = createDatabase();
     for (const body of ["null", "[]", '"text"', "{"]) {

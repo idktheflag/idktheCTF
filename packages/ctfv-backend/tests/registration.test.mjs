@@ -28,3 +28,20 @@ test('duplicate usernames produce an actionable conflict instead of a server err
   assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS n FROM user').get().n,1);
   db.sqlite.close();
 });
+
+test("registration does not disclose whether an email already has an account", async () => {
+  const db = createDatabase();
+  db.sqlite.exec("INSERT INTO user(id,name,email,password,emailVerified) VALUES ('existing','Existing','existing@example.test','unused',1)");
+  const env = { DATABASE: db, AUTH_SECRET: "registration-test-secret" };
+  const existing = await app.request("/api/users/auth/register", request({ email: "existing@example.test", username: "new-player", password: "new-password-123" }), env);
+  const available = await app.request("/api/users/auth/register", request({ email: "new@example.test", username: "new-player-2", password: "new-password-123" }), env);
+  const existingWithTakenUsername = await app.request("/api/users/auth/register", request({ email: "existing@example.test", username: "Existing", password: "new-password-123" }), env);
+  const availableWithTakenUsername = await app.request("/api/users/auth/register", request({ email: "another@example.test", username: "Existing", password: "new-password-123" }), env);
+  assert.equal(existing.status, 200);
+  assert.equal(available.status, existing.status);
+  assert.deepEqual(await available.json(), await existing.json());
+  assert.equal(availableWithTakenUsername.status, existingWithTakenUsername.status);
+  assert.deepEqual(await availableWithTakenUsername.json(), await existingWithTakenUsername.json());
+  assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM user").get().n, 2);
+  db.sqlite.close();
+});

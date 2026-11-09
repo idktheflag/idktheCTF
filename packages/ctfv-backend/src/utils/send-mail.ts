@@ -37,7 +37,7 @@ export const sendVerificationEmail = async (
 
   await deliver(c, "verification", {
     to: email,
-    subject: "Verify your email for CTFv",
+    subject: "Verify your email for idktheCTF",
     text: `Click on the following link to verify your email: ${verificationURL}`,
   });
 

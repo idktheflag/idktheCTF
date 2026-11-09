@@ -65,11 +65,13 @@ router.get("/users", async (c) => {
   const selectedSort = sortColumn(sortColumns, c.req.query("sort"), "username");
   const direction = c.req.query("dir")?.toLowerCase() === "desc" ? "DESC" : "ASC";
   const whereSql = where.join(" AND ");
-  const [count, result] = await Promise.all([
+  const ownerEmail = c.env.OWNER_EMAIL?.trim().toLowerCase();
+  const [count, result, actor] = await Promise.all([
     c.env.DATABASE.prepare(`SELECT COUNT(*) AS total FROM user u LEFT JOIN team_members tm ON tm.user_id = u.id LEFT JOIN teams t ON t.id = tm.team_id WHERE ${whereSql}`).bind(...bindings).first<{ total: number }>(),
-    c.env.DATABASE.prepare(`SELECT u.id, CASE WHEN u.isAdmin = 1 THEN NULL ELSE u.name END AS username, u.email, u.isAdmin, u.emailVerified, u.is_banned AS isBanned, CASE WHEN u.isAdmin = 1 THEN NULL ELSE t.name END AS teamName FROM user u LEFT JOIN team_members tm ON tm.user_id = u.id LEFT JOIN teams t ON t.id = tm.team_id WHERE ${whereSql} ORDER BY ${selectedSort} ${direction}, u.id ASC LIMIT ? OFFSET ?`).bind(...bindings, pageSize, (page - 1) * pageSize).all(),
+    c.env.DATABASE.prepare(`SELECT u.id, CASE WHEN u.isAdmin = 1 THEN NULL ELSE u.name END AS username, u.email, u.isAdmin, u.emailVerified, u.is_banned AS isBanned, CASE WHEN u.isAdmin = 1 THEN NULL ELSE t.name END AS teamName, CASE WHEN ? <> '' AND lower(u.email) = ? THEN 1 ELSE 0 END AS isOwner FROM user u LEFT JOIN team_members tm ON tm.user_id = u.id LEFT JOIN teams t ON t.id = tm.team_id WHERE ${whereSql} ORDER BY ${selectedSort} ${direction}, u.id ASC LIMIT ? OFFSET ?`).bind(ownerEmail ?? "", ownerEmail ?? "", ...bindings, pageSize, (page - 1) * pageSize).all(),
+    c.env.DATABASE.prepare("SELECT lower(email) AS email FROM user WHERE id = ?").bind(c.get("jwtPayload").userId).first<{ email: string }>(),
   ]);
-  return c.json({ users: result.results, page, pageSize, total: count?.total ?? 0 });
+  return c.json({ users: result.results, page, pageSize, total: count?.total ?? 0, canManageRoles: Boolean(ownerEmail && actor?.email === ownerEmail) });
 });
 
 router.patch("/users/:id/ban", async (c) => {
@@ -82,6 +84,31 @@ router.patch("/users/:id/ban", async (c) => {
   if (!result.meta.changes) return c.json({ error: "Participant not found or cannot be moderated" }, 404);
   await writeAudit(c, { action: isBanned ? "participant.banned" : "participant.unbanned", targetType: "participant", targetId: c.req.param("id"), metadata: { isBanned } });
   return c.json({ updated: true, isBanned });
+});
+
+router.patch("/users/:id/role", async (c) => {
+  const ownerEmail = c.env.OWNER_EMAIL?.trim().toLowerCase();
+  const actorId = c.get("jwtPayload").userId;
+  const actor = await c.env.DATABASE.prepare("SELECT lower(email) AS email FROM user WHERE id = ?").bind(actorId).first<{ email: string }>();
+  if (!ownerEmail || actor?.email !== ownerEmail) return c.json({ error: "Only the account owner can manage organizer roles" }, 403);
+
+  const input = await readJsonRecord(c.req);
+  if (!input || typeof input.isAdmin !== "boolean") return c.json({ error: "isAdmin must be true or false" }, 400);
+  const userId = c.req.param("id");
+  const target = await c.env.DATABASE.prepare("SELECT email, isAdmin, emailVerified, is_banned AS isBanned FROM user WHERE id = ?").bind(userId).first<{ email: string; isAdmin: number; emailVerified: number; isBanned: number }>();
+  if (!target) return c.json({ error: "User not found" }, 404);
+  if (target.email.trim().toLowerCase() === ownerEmail) return c.json({ error: "The account owner role cannot be changed" }, 400);
+  const isAdmin = input.isAdmin;
+  if (isAdmin && (!target.emailVerified || target.isBanned)) return c.json({ error: "Verify the user's email and restore the account before making them an organizer" }, 400);
+  if (Boolean(target.isAdmin) === isAdmin) return c.json({ updated: false, isAdmin });
+
+  const result = await c.env.DATABASE.prepare(`UPDATE user SET isAdmin = ?, auth_version = auth_version + 1
+    WHERE id = ? AND isAdmin = ? AND lower(email) <> ? AND (? = 1 OR EXISTS (SELECT 1 FROM user WHERE isAdmin = 1 AND is_banned = 0 AND id <> ?))`)
+    .bind(isAdmin ? 1 : 0, userId, target.isAdmin, ownerEmail, isAdmin ? 1 : 0, userId).run();
+  if (!result.meta.changes) return c.json({ error: "At least one active organizer must remain" }, 409);
+
+  await writeAudit(c, { action: isAdmin ? "organizer.promoted" : "organizer.demoted", targetType: "user", targetId: userId, metadata: { isAdmin } });
+  return c.json({ updated: true, isAdmin });
 });
 
 router.get("/teams", async (c) => {

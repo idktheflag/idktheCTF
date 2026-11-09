@@ -1,25 +1,31 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { sign } from "hono/jwt";
 import { createDatabase, loadWorker } from "./helpers.mjs";
 const app = await loadWorker();
 const request = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "player@example.test" }) };
+async function verificationRequest() {
+  const token = await sign({ userId: "player", isAdmin: false, emailVerified: false, authVersion: 0, exp: Math.floor(Date.now() / 1000) + 60 }, "test-secret");
+  return { ...request, headers: { ...request.headers, Authorization: `Bearer ${token}` } };
+}
 function fixture(send) {
   const db = createDatabase();
   db.sqlite.exec("INSERT INTO user(id,name,email,password) VALUES ('player','player','player@example.test','unused')");
   return { db, env: { DATABASE: db, AUTH_SECRET: "test-secret", APP_URL: "https://ctf.example.test", EMAIL_FROM: "wrong@example.test", EMAIL: { send } } };
 }
 test("verification uses the pinned sender and allows retry after a minute", async () => {
-  let sender;
-  const { db, env } = fixture(async (message) => { sender = message.from; return { messageId: "test-message" }; });
+  let sentMessage;
+  const { db, env } = fixture(async (message) => { sentMessage = message; return { messageId: "test-message" }; });
   db.sqlite.prepare("UPDATE user SET lastVerificationEmailSent=?").run(Date.now()-61000);
-  const response = await app.request("/api/users/auth/send-verify-email", request, env);
+  const response = await app.request("/api/users/auth/send-verify-email", await verificationRequest(), env);
   assert.equal(response.status, 200);
-  assert.equal(sender, "no-reply@idktheflag.sh");
+  assert.equal(sentMessage.from, "no-reply@idktheflag.sh");
+  assert.equal(sentMessage.subject, "Verify your email for idktheCTF");
   db.sqlite.close();
 });
-test("failed verification delivery reports service unavailability without reserving a cooldown", async () => {
+test("failed verification delivery reports service unavailability and releases its cooldown", async () => {
   const { db, env } = fixture(async () => { throw Object.assign(new Error("provider failure"), { code: "TEST_PROVIDER_DOWN" }); });
-  const response = await app.request("/api/users/auth/send-verify-email", request, env);
+  const response = await app.request("/api/users/auth/send-verify-email", await verificationRequest(), env);
   assert.equal(response.status, 503);
   assert.equal(db.sqlite.prepare("SELECT lastVerificationEmailSent FROM user").get().lastVerificationEmailSent, null);
   db.sqlite.close();

@@ -23,8 +23,9 @@ const SendEmail = () => {
         getBackendURL() + "/api/users/auth/send-verify-email",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: user?.email }),
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem("token")}`,
+          },
         },
       );
 
@@ -39,7 +40,7 @@ const SendEmail = () => {
       setResendStatus("error");
       setError(err.message);
     }
-  }, [user?.email]);
+  }, []);
 
   useEffect(() => {
     if (user?.emailVerified) {

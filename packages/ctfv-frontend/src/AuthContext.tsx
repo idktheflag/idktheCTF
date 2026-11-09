@@ -112,7 +112,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     });
     const data = await response.json();
     if (response.ok) {
-      updateUserFromToken(data.token);
+      return;
     } else {
       throw new Error(data.error);
     }

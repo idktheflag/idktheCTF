@@ -5,12 +5,16 @@ import { createDatabase, loadWorker } from "./helpers.mjs";
 
 const app = await loadWorker();
 const secret = "test-only-auth-secret-with-at-least-32-characters";
+const verificationRequest = async (userId = "p", email = "p@example.test") => {
+  const token = await sign({ userId, isAdmin: false, emailVerified: false, authVersion: 0, exp: Math.floor(Date.now() / 1000) + 60 }, secret);
+  return { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ email }) };
+};
 test('concurrent verification resends reserve one delivery slot',async()=>{
   const db=createDatabase();db.sqlite.exec("INSERT INTO user(id,name,email,password) VALUES ('p','Player','p@example.test','unused')");
   let release;let started;let deliveries=0;
   const gate=new Promise(resolve=>{release=resolve;});const sending=new Promise(resolve=>{started=resolve;});
   const env={DATABASE:db,AUTH_SECRET:secret,APP_URL:'https://ctf.example.test',EMAIL:{send:async()=>{deliveries++;if(deliveries===1){started();await gate;}}}};
-  const send=()=>app.request('/api/users/auth/send-verify-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'p@example.test'})},env);
+  const send=async()=>app.request('/api/users/auth/send-verify-email',await verificationRequest(),env);
   const first=send();await sending;
   let second;
   try{second=await send();}finally{release();await first;}
@@ -20,7 +24,7 @@ test('concurrent verification resends reserve one delivery slot',async()=>{
 });
 test('failed verification delivery releases its reserved resend cooldown',async()=>{
   const db=createDatabase();db.sqlite.exec("INSERT INTO user(id,name,email,password) VALUES ('p','Player','p@example.test','unused')");
-  const response=await app.request('/api/users/auth/send-verify-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'p@example.test'})},{DATABASE:db,AUTH_SECRET:secret,APP_URL:'https://ctf.example.test',EMAIL:{send:async()=>{throw new Error('Delivery unavailable');}}});
+  const response=await app.request('/api/users/auth/send-verify-email',await verificationRequest(),{DATABASE:db,AUTH_SECRET:secret,APP_URL:'https://ctf.example.test',EMAIL:{send:async()=>{throw new Error('Delivery unavailable');}}});
   assert.equal(response.status,503);
   assert.equal(db.sqlite.prepare("SELECT lastVerificationEmailSent FROM user WHERE id='p'").get().lastVerificationEmailSent,null);
   db.sqlite.close();
@@ -92,7 +96,7 @@ test("recovery during verification delivery cannot restore the invalid link cool
     const reset = await app.request("/api/users/auth/password-reset/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: resetToken, password: "new-test-password-123" }) }, env);
     assert.equal(reset.status, 200);
   } } };
-  const response = await app.request("/api/users/auth/send-verify-email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "player@example.test" }) }, env);
+  const response = await app.request("/api/users/auth/send-verify-email", await verificationRequest("player", "player@example.test"), env);
   assert.equal(response.status, 200);
   assert.equal(db.sqlite.prepare("SELECT lastVerificationEmailSent FROM user WHERE id='player'").get().lastVerificationEmailSent, null);
   assert.equal((await app.request(`/api/users/auth/verify-email?${oldLink.searchParams}`, {}, env)).status, 400);
@@ -104,11 +108,26 @@ test("email verification link can establish a session only once", async () => {
   db.sqlite.prepare("INSERT INTO user (id, name, email, password) VALUES (?, ?, ?, ?)").run("player", "player", "player@example.test", "unused-hash");
   const messages = [];
   const env = { DATABASE: db, AUTH_SECRET: secret, APP_URL: "https://ctf.example.test", EMAIL_FROM: "no-reply@example.test", EMAIL: { send: async (message) => messages.push(message) } };
-  const sent = await app.request("https://ctf.example.test/api/users/auth/send-verify-email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "player@example.test" }) }, env);
+  const sent = await app.request("https://ctf.example.test/api/users/auth/send-verify-email", await verificationRequest("player", "player@example.test"), env);
   assert.equal(sent.status, 200, await sent.text());
   const verification = new URL(messages[0].text.match(/https:\/\/\S+/)[0]);
   const path = `/api/users/auth/verify-email?${verification.searchParams}`;
   assert.equal((await app.request(path, {}, env)).status, 200);
   assert.equal((await app.request(path, {}, env)).status, 400);
+  db.sqlite.close();
+});
+
+test("verification resend requires a session and only sends to that session's account", async () => {
+  const db = createDatabase();
+  db.sqlite.exec("INSERT INTO user(id,name,email,password) VALUES ('p','Player','p@example.test','unused'),('q','Other','q@example.test','unused')");
+  let recipient;
+  const env = { DATABASE: db, AUTH_SECRET: secret, APP_URL: "https://ctf.example.test", EMAIL: { send: async (message) => { recipient = message.to; } } };
+  const anonymous = await app.request("/api/users/auth/send-verify-email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "q@example.test" }) }, env);
+  assert.equal(anonymous.status, 401);
+  const ownRequest = await verificationRequest("p", "q@example.test");
+  const response = await app.request("/api/users/auth/send-verify-email", ownRequest, env);
+  assert.equal(response.status, 200);
+  assert.equal(recipient, "p@example.test");
+  assert.equal(db.sqlite.prepare("SELECT lastVerificationEmailSent FROM user WHERE id='q'").get().lastVerificationEmailSent, null);
   db.sqlite.close();
 });
