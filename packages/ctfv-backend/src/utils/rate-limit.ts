@@ -11,12 +11,15 @@ export async function isRateLimited(
   if (!limiter) return false;
   const ip = c.req.header("CF-Connecting-IP") || "unavailable";
   const normalizedEmail = email.trim().toLowerCase().slice(0, 254);
-  const key = await sha256Hex(`${scope}\0${normalizedEmail}\0${ip}`);
+  const ipKey = await sha256Hex(`${scope}\0ip\0${ip}`);
+  const identityKey = await sha256Hex(`${scope}\0identity\0${normalizedEmail}`);
   try {
-    const outcome = await limiter.limit({ key });
-    return !outcome.success;
+    const ipOutcome = await (c.env.AUTH_IP_LIMITER ?? limiter).limit({ key: ipKey });
+    if (!ipOutcome.success) return true;
+    const identityOutcome = await limiter.limit({ key: identityKey });
+    return !identityOutcome.success;
   } catch {
     console.error(`Auth rate limiter unavailable for ${scope}`);
-    return false;
+    return true;
   }
 }

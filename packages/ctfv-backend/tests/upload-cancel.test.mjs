@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import {sign} from 'hono/jwt';
+import {createDatabase,loadWorker} from './helpers.mjs';
+const app=await loadWorker();
+test('cancellation deletes retained completed bytes and remains retryable if R2 cleanup fails',async()=>{
+  const db=createDatabase();
+  db.sqlite.exec("INSERT INTO user(id,name,email,password,isAdmin,emailVerified) VALUES ('a','Admin','a@example.test','unused',1,1); INSERT INTO challenges(id,name,description,url,points,category,author,flag) VALUES ('c','C','Description','',100,'web','Admin','secret'); INSERT INTO attachment_uploads(id,attachment_id,challenge_id,owner_id,object_key,upload_id,filename,content_type,size,part_size,expires_at) VALUES ('session','file','c','a','key','upload','test.txt','text/plain',4,16,9999999999999)");
+  const secret='upload-cancel-test-secret';
+  const token=await sign({userId:'a',isAdmin:true,emailVerified:true,authVersion:0,exp:Math.floor(Date.now()/1000)+60},secret);
+  let fail=true;let deleted=false;
+  const env={DATABASE:db,AUTH_SECRET:secret,FILES:{resumeMultipartUpload:()=>({abort:async()=>{throw new Error('Already completed');}}),delete:async()=>{if(fail)throw new Error('R2 unavailable');deleted=true;}}};
+  const cancel=()=>app.request('/api/attachments/multipart/session',{method:'DELETE',headers:{Authorization:`Bearer ${token}`}},env);
+  assert.equal((await cancel()).status,500);
+  const retained=db.sqlite.prepare("SELECT expires_at FROM attachment_uploads WHERE id='session'").get();
+  assert.ok(retained,'retain cleanup metadata for retry');assert.equal(retained.expires_at,0,'prevent finalization while cleanup is pending');
+  fail=false;
+  assert.equal((await cancel()).status,200);
+  assert.equal(deleted,true);
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS n FROM attachment_uploads').get().n,0);
+  db.sqlite.close();
+});
+test('cancellation winning before metadata commit prevents later publication',async()=>{
+  const db=createDatabase();
+  db.sqlite.exec("INSERT INTO user(id,name,email,password,isAdmin,emailVerified) VALUES ('a','Admin','a@example.test','unused',1,1); INSERT INTO challenges(id,name,description,url,points,category,author,flag) VALUES ('c','C','Description','',100,'web','Admin','secret'); INSERT INTO attachment_uploads(id,attachment_id,challenge_id,owner_id,object_key,upload_id,filename,content_type,size,part_size,expires_at) VALUES ('session','file','c','a','key','upload','test.txt','text/plain',4,16,9999999999999); INSERT INTO attachment_upload_parts(id,session_id,part_number,etag,size) VALUES ('part','session',1,'etag',4)");
+  const secret='upload-cancel-race-test-secret';
+  const token=await sign({userId:'a',isAdmin:true,emailVerified:true,authVersion:0,exp:Math.floor(Date.now()/1000)+60},secret);
+  const headers={Authorization:`Bearer ${token}`};let deleted=false;
+  const env={DATABASE:db,AUTH_SECRET:secret,FILES:{head:async()=>({size:4}),resumeMultipartUpload:()=>({abort:async()=>{}}),delete:async()=>{deleted=true;}}};
+  const batch=db.batch.bind(db);
+  db.batch=async(statements)=>{
+    const cancel=await app.request('/api/attachments/multipart/session',{method:'DELETE',headers},env);
+    assert.equal(cancel.status,200);
+    return batch(statements);
+  };
+  const response=await app.request('/api/attachments/multipart/session/complete',{method:'POST',headers},env);
+  assert.equal(response.status,410);
+  assert.equal(deleted,true);
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS n FROM attachments').get().n,0);
+  db.sqlite.close();
+});

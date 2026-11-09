@@ -1,4 +1,5 @@
-﻿import { useAuth } from "@/AuthContext";
+import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/auth-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getBackendURL } from "@/lib/utils";
@@ -13,10 +14,10 @@ export const Home: React.FC = () => {
   const [event, setEvent] = useState<EventInfo | null>(null); const [announcements, setAnnouncements] = useState<Announcement[]>([]); const [team, setTeam] = useState<boolean | null>(null);
   const [pages, setPages] = useState<EventPage[]>([]);
   useEffect(() => {
-    void fetch(`${getBackendURL()}/api/event`).then((r) => r.ok ? r.json() : null).then(setEvent);
-    void fetch(`${getBackendURL()}/api/content/announcements`).then((r) => r.json()).then((d) => setAnnouncements(d.announcements || []));
-    void fetch(`${getBackendURL()}/api/content/pages`).then((r) => r.json()).then((d) => setPages(d.pages || []));
-    if (user) void fetch(`${getBackendURL()}/api/teams/me`, { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }).then((r) => r.json()).then((d) => setTeam(Boolean(d.team)));
+    void apiFetch(`${getBackendURL()}/api/event`).then((r) => r.ok ? r.json() : null).then(setEvent);
+    void apiFetch(`${getBackendURL()}/api/content/announcements`).then((r) => r.json()).then((d) => setAnnouncements(d.announcements || []));
+    void apiFetch(`${getBackendURL()}/api/content/pages`).then((r) => r.json()).then((d) => setPages(d.pages || []));
+    if (user) void apiFetch(`${getBackendURL()}/api/teams/me`, { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }).then((r) => r.json()).then((d) => setTeam(Boolean(d.team)));
   }, [user]);
   const date = (value: string | null) => value ? new Date(value).toLocaleString(undefined, { timeZone: event?.timezone || "UTC" }) : "Not set";
   return <main className="mx-auto max-w-5xl px-4 py-8 text-foreground">

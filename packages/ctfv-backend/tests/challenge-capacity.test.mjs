@@ -1,0 +1,26 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import {sign} from 'hono/jwt';
+import {createDatabase,loadWorker} from './helpers.mjs';
+const app=await loadWorker();
+test('maximum-size challenge saves retain every flag, hint, tag and purchased unlock',async()=>{
+  const db=createDatabase();
+  db.sqlite.exec("INSERT INTO user(id,name,email,password,isAdmin,emailVerified) VALUES ('a','Admin','a@example.test','unused',1,1),('p','Player','p@example.test','unused',0,1); INSERT INTO teams(id,name,join_code,captain_id) VALUES ('t','Team','CODE','p'); INSERT INTO team_members(id,team_id,user_id) VALUES ('m','t','p')");
+  const secret='challenge-capacity-test-secret';const token=await sign({userId:'a',isAdmin:true,emailVerified:true,authVersion:0,exp:Math.floor(Date.now()/1000)+60},secret);
+  const request=(path,body,method='POST')=>app.request('/api/challenges/'+path,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify(body)},{DATABASE:db,AUTH_SECRET:secret});
+  const flags=Array.from({length:20},(_,i)=>({value:`flag-${i}`,type:'static'}));
+  const hints=Array.from({length:30},(_,i)=>({body:`Hint ${i}`,cost:i,sortOrder:i}));
+  const tags=Array.from({length:30},(_,i)=>`tag-${i}`);
+  const created=await request('create',{name:'Capacity',description:'Description',url:'',points:100,category:'web',author:'Admin',flags,hints,tags,maxAttempts:1000000});
+  assert.equal(created.status,200);
+  const challenge=await created.json();assert.equal('flag' in challenge,false);
+  const rows=db.sqlite.prepare('SELECT id,body,cost,sort_order AS sortOrder FROM challenge_hints WHERE challenge_id=? ORDER BY sort_order').all(challenge.id);
+  assert.equal(rows.length,30);
+  db.sqlite.prepare("INSERT INTO hint_unlocks(id,hint_id,team_id) VALUES ('purchase',?,'t')").run(rows[0].id);
+  const edited=await request('update/'+challenge.id,{flags,hints:rows.map(h=>({...h,body:h.body+' edited'})),tags},'PUT');
+  assert.equal(edited.status,200);
+  for(const [table,count] of [['challenge_flags',20],['challenge_hints',30],['challenge_tags',30]])assert.equal(db.sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE challenge_id=?`).get(challenge.id).n,count,table);
+  assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM hint_unlocks WHERE id='purchase'").get().n,1);
+  assert.equal(db.sqlite.prepare('SELECT flag_version FROM challenges WHERE id=?').get(challenge.id).flag_version,1);
+  db.sqlite.close();
+});

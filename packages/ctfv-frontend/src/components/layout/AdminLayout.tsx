@@ -1,4 +1,5 @@
-﻿import { useAuth } from "@/AuthContext";
+import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/auth-context";
 import { Button } from "@/components/ui/button";
 import { getBackendURL } from "@/lib/utils";
 import { CircleHelp, FileText, Flag, LayoutDashboard, Logs, LogOut, Menu, Settings2, Users, X } from "lucide-react";
@@ -9,6 +10,7 @@ const navigation = [
   { label: "Overview", to: "/admin/dashboard", icon: LayoutDashboard, end: true },
   { label: "Challenges", to: "/admin/challenges", icon: Flag, end: true },
   { label: "Teams", to: "/admin/teams", icon: Users },
+  { label: "Participants", to: "/admin/users", icon: Users },
   { label: "Activity log", to: "/admin/logs", icon: Logs },
   { label: "Announcements & pages", to: "/admin/content", icon: FileText },
   { label: "Event settings", to: "/admin/event", icon: Settings2 },
@@ -25,7 +27,7 @@ export const AdminLayout: React.FC = () => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [event, setEvent] = useState<{ name: string; phase: string } | null>(null);
   useEffect(() => {
-    fetch(`${getBackendURL()}/api/event`).then((response) => response.json()).then((data) => {
+    apiFetch(`${getBackendURL()}/api/event`).then((response) => response.json()).then((data) => {
       if (data.initialized) setEvent({ name: data.name, phase: data.phase });
     }).catch(() => setEvent(null));
   }, []);
@@ -65,7 +67,7 @@ export const AdminLayout: React.FC = () => {
           <div className="flex items-center gap-3"><Button variant="ghost" size="icon" className="md:hidden" onClick={() => setMenuOpen((open) => !open)} aria-label={menuOpen ? "Close menu" : "Open menu"}>{menuOpen ? <X size={20} /> : <Menu size={20} />}</Button><p className="text-sm font-semibold">Administration</p></div>
           <div className="flex items-center gap-2"><span className="hidden rounded-md border border-border px-3 py-1.5 font-mono text-xs text-muted-foreground sm:inline">idktheCTF / organizer</span></div>
         </header>
-        <main className="mx-auto w-full max-w-[1500px] p-4 sm:p-6 lg:p-8"><Suspense fallback={<div className="p-8 text-center text-sm text-muted-foreground">Loading organizer toolsâ€¦</div>}><Outlet /></Suspense></main>
+        <main className="mx-auto w-full max-w-[1500px] p-4 sm:p-6 lg:p-8"><Suspense fallback={<div className="p-8 text-center text-sm text-muted-foreground">Loading organizer tools…</div>}><Outlet /></Suspense></main>
       </div>
     </div>
   </div>;

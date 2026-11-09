@@ -1,4 +1,5 @@
-﻿import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { apiFetch } from "@/lib/api";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Table,
   TableBody,
@@ -28,7 +29,7 @@ export const Users: React.FC = () => {
       setIsLoading(true);
       setError(null);
       try {
-        const response = await fetch(getBackendURL() + "/api/users", {
+        const response = await apiFetch(getBackendURL() + "/api/users", {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${localStorage.getItem("token")}`,

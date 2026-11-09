@@ -1,39 +1,37 @@
-﻿import { useAuth } from "@/AuthContext";
+import { useAuth } from "@/auth-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 const VerifyEmail = () => {
   const [verificationStatus, setVerificationStatus] = useState("verifying");
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
   const { verifyEmail } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const verification = useRef<{ token: string; promise: Promise<void> } | null>(null);
 
   useEffect(() => {
-    const verify = async () => {
-      const searchParams = new URLSearchParams(location.search);
-      const token = searchParams.get("token");
-
-      if (!token) {
-        setVerificationStatus("error");
-        return;
-      }
-
-      try {
-        await verifyEmail(token);
-        setVerificationStatus("success");
-      } catch (error) {
-        console.error("Email verification error:", error);
-        setVerificationStatus("error");
-      }
-    };
-
-    // Only verify if the status is still 'verifying'
-    if (verificationStatus === "verifying") {
-      verify();
+    const token = new URLSearchParams(location.search).get("token");
+    if (!token) {
+      setError("This verification link is missing its token. Request a new verification email.");
+      setVerificationStatus("error");
+      return;
     }
-  }, [location.search, verifyEmail, verificationStatus]);
+    let active = true;
+    if (verification.current?.token !== token) {
+      setVerificationStatus("verifying");
+      setError("");
+      verification.current = { token, promise: verifyEmail(token) };
+    }
+    void verification.current.promise.then(
+      () => { if (active) setVerificationStatus("success"); },
+      (error) => { if (active) { setError(error instanceof Error ? error.message : "Verification failed. Please try again."); setVerificationStatus("error"); } },
+    );
+    return () => { active = false; };
+  }, [location.search, verifyEmail, attempt]);
 
   const handleContinue = () => {
     navigate("/");
@@ -63,9 +61,9 @@ const VerifyEmail = () => {
         {verificationStatus === "error" && (
           <>
             <p className="mb-4 text-center text-red-600">
-              There was an error verifying your email. The link may be invalid
-              or expired.
+              {error}
             </p>
+            {new URLSearchParams(location.search).get("token") && <Button onClick={() => { verification.current = null; setVerificationStatus("verifying"); setAttempt((value) => value + 1); }} className="mb-3 w-full">Retry verification</Button>}
             <Button onClick={() => navigate("/login")} className="w-full">
               Back to Login
             </Button>

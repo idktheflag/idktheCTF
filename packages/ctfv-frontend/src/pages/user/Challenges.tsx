@@ -1,4 +1,5 @@
-﻿import { useAuth } from "@/AuthContext";
+import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/auth-context";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -125,28 +126,42 @@ const ChallengeDetails: React.FC<{
   </>
 );
 
-const ChallengeExtras: React.FC<{ challengeId: string }> = ({ challengeId }) => {
+export const ChallengeExtras: React.FC<{ challengeId: string }> = ({ challengeId }) => {
   const [hints, setHints] = useState<{ id: string; cost: number; body: string | null; unlocked: boolean }[]>([]);
   const [files, setFiles] = useState<{ id: string; filename: string; size: number }[]>([]);
   const [error, setError] = useState("");
   const token = localStorage.getItem("token");
   useEffect(() => {
+    const controller = new AbortController();
+    setHints([]); setFiles([]); setError("");
     const headers = { Authorization: `Bearer ${token}` };
-    void fetch(getBackendURL() + `/api/challenges/${challengeId}/hints`, { headers }).then((r) => r.json()).then((d) => setHints(d.hints || []));
-    void fetch(getBackendURL() + `/api/attachments/challenge/${challengeId}`, { headers }).then((r) => r.json()).then((d) => setFiles(d.attachments || []));
+    const report = (error: unknown) => { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Could not load challenge resources"); };
+    void apiFetch(getBackendURL() + `/api/challenges/${challengeId}/hints`, { headers, signal: controller.signal })
+      .then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error || "Could not load hints"); if (!controller.signal.aborted) setHints(d.hints || []); }).catch(report);
+    void apiFetch(getBackendURL() + `/api/attachments/challenge/${challengeId}`, { headers, signal: controller.signal })
+      .then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error || "Could not load files"); if (!controller.signal.aborted) setFiles(d.attachments || []); }).catch(report);
+    return () => controller.abort();
   }, [challengeId, token]);
   const unlock = async (id: string) => {
-    const r = await fetch(getBackendURL() + `/api/challenges/hints/${id}/unlock`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
-    const d = await r.json();
-    if (!r.ok) { setError(d.error || "Hint could not be unlocked"); return; }
-    setHints((old) => old.map((hint) => hint.id === id ? { ...hint, body: d.hint.body, unlocked: true } : hint));
+    setError("");
+    try {
+      const r = await apiFetch(getBackendURL() + `/api/challenges/hints/${id}/unlock`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Hint could not be unlocked");
+      setHints((old) => old.map((hint) => hint.id === id ? { ...hint, body: d.hint.body, cost: d.hint.cost, unlocked: true } : hint));
+    } catch (error) { setError(error instanceof Error ? error.message : "Hint could not be unlocked. Please try again."); }
   };
   const download = async (id: string, filename: string) => {
-    const r = await fetch(getBackendURL() + `/api/attachments/${id}/download`, { headers: { Authorization: `Bearer ${token}` } });
-    if (!r.ok) { setError("File download failed"); return; }
-    const href = URL.createObjectURL(await r.blob()); const a = document.createElement("a"); a.href = href; a.download = filename; a.click(); URL.revokeObjectURL(href);
+    setError("");
+    try {
+      const r = await apiFetch(getBackendURL() + `/api/attachments/${id}/download`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) throw new Error("File download failed. Please try again.");
+      const href = URL.createObjectURL(await r.blob());
+      try { const a = document.createElement("a"); a.href = href; a.download = filename; a.click(); }
+      finally { URL.revokeObjectURL(href); }
+    } catch (error) { setError(error instanceof Error ? error.message : "File download failed. Please try again."); }
   };
-  return <section className="mt-5 grid gap-4 border-t pt-4"><h3 className="font-semibold">Hints</h3>{hints.map((hint) => <div key={hint.id} className="rounded bg-secondary p-3 bg-card">{hint.body ? <p>{hint.body}</p> : <button className="text-primary underline" onClick={() => void unlock(hint.id)}>Unlock hint Â· {hint.cost} points</button>}</div>)}<h3 className="font-semibold">Files</h3>{files.map((file) => <button key={file.id} onClick={() => void download(file.id, file.filename)} className="text-left text-primary underline">{file.filename} Â· {(file.size / 1024).toFixed(0)} KB</button>)}{error && <p role="alert" className="text-sm text-red-600">{error}</p>}</section>;
+  return <section className="mt-5 grid gap-4 border-t pt-4"><h3 className="font-semibold">Hints</h3>{hints.map((hint) => <div key={hint.id} className="rounded bg-secondary p-3 bg-card">{hint.body ? <p>{hint.body}</p> : <button className="text-primary underline" onClick={() => void unlock(hint.id)}>Unlock hint · {hint.cost} points</button>}</div>)}<h3 className="font-semibold">Files</h3>{files.map((file) => <button key={file.id} onClick={() => void download(file.id, file.filename)} className="text-left text-primary underline">{file.filename} · {(file.size / 1024).toFixed(0)} KB</button>)}{error && <p role="alert" className="text-sm text-red-600">{error}</p>}</section>;
 };
 
 const FlagSubmission: React.FC<{
@@ -261,7 +276,7 @@ export const Challenges: React.FC = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await fetch(getBackendURL() + "/api/challenges/read", {
+      const response = await apiFetch(getBackendURL() + "/api/challenges/read", {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${localStorage.getItem("token")}`,
@@ -294,7 +309,7 @@ export const Challenges: React.FC = () => {
 
   const fetchSubmissions = async (challengeId: string) => {
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         getBackendURL() + `/api/submissions/readbychallengeid/${challengeId}`,
         {
           headers: {
@@ -328,7 +343,7 @@ export const Challenges: React.FC = () => {
     setSubmissionStatus(null);
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         getBackendURL() + `/api/challenges/submit/${selectedChallenge.id}`,
         {
           method: "POST",
@@ -453,7 +468,7 @@ export const Challenges: React.FC = () => {
                             onEdit={() => setEditChallengeId(selectedChallenge.id)}
                             isDeleting={isDeleting}
                           />
-                          <p className="my-2 text-sm text-muted-foreground">{selectedChallenge.tags?.join(" Â· ")}</p>
+                          <p className="my-2 text-sm text-muted-foreground">{selectedChallenge.tags?.join(" · ")}</p>
                           <ChallengeExtras challengeId={selectedChallenge.id} />
                           {!user?.isAdmin && (
                             <FlagSubmission

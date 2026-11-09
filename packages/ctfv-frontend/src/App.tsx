@@ -1,4 +1,6 @@
-﻿import { AuthProvider, useAuth } from "@/AuthContext";
+import { apiFetch } from "@/lib/api";
+import { AuthProvider } from "@/AuthContext";
+import { useAuth } from "@/auth-context";
 import { AdminLayout } from "@/components/layout/AdminLayout";
 import { Navbar } from "@/components/layout/Navbar";
 import { getBackendURL } from "@/lib/utils";
@@ -21,27 +23,36 @@ const Teams = React.lazy(() => import("@/pages/user/Teams").then((m) => ({ defau
 const TeamProfile = React.lazy(() => import("@/pages/user/TeamProfile").then((m) => ({ default: m.TeamProfile })));
 const EventSettings = React.lazy(() => import("@/pages/admin/EventSettings").then((m) => ({ default: m.EventSettings })));
 const TeamsAdmin = React.lazy(() => import("@/pages/admin/TeamsAdmin").then((m) => ({ default: m.TeamsAdmin })));
+const UsersAdmin = React.lazy(() => import("@/pages/admin/UsersAdmin").then((m) => ({ default: m.UsersAdmin })));
 const LogsAdmin = React.lazy(() => import("@/pages/admin/LogsAdmin").then((m) => ({ default: m.LogsAdmin })));
 const ContentAdmin = React.lazy(() => import("@/pages/admin/ContentAdmin").then((m) => ({ default: m.ContentAdmin })));
 const ContentPage = React.lazy(() => import("@/pages/user/ContentPage").then((m) => ({ default: m.ContentPage })));
 
 const PublicLayout: React.FC = () => <>
   <Navbar />
-  <div className="container mx-auto p-4"><Suspense fallback={<div className="p-8 text-center">Loading pageâ€¦</div>}><Outlet /></Suspense></div>
+  <div className="container mx-auto p-4"><Suspense fallback={<div className="p-8 text-center">Loading page…</div>}><Outlet /></Suspense></div>
 </>;
 
-const TeamRequired: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const TeamRequired: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
-  const [state, setState] = React.useState<"checking" | "ready" | "team">("checking");
+  const [state, setState] = React.useState<"checking" | "ready" | "team" | "error">("checking");
+  const [attempt, setAttempt] = React.useState(0);
   React.useEffect(() => {
     if (!user) { setState("ready"); return; }
+    if (!user.emailVerified) { setState("ready"); return; }
     if (user.isAdmin) { setState("ready"); return; }
-    fetch(`${getBackendURL()}/api/teams/me`, { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } })
-      .then((r) => r.json()).then((data) => setState(data.team ? "ready" : "team")).catch(() => setState("team"));
-  }, [user]);
-  if (state === "checking") return <div className="p-8 text-center">Checking team membershipâ€¦</div>;
+    const controller = new AbortController();
+    setState("checking");
+    apiFetch(`${getBackendURL()}/api/teams/me`, { signal: controller.signal, headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } })
+      .then((r) => { if (!r.ok) throw new Error("Membership unavailable"); return r.json(); })
+      .then((data) => { if (!controller.signal.aborted) setState(data.team ? "ready" : "team"); })
+      .catch(() => { if (!controller.signal.aborted) setState("error"); });
+    return () => controller.abort();
+  }, [user, attempt]);
+  if (state === "checking") return <div className="p-8 text-center">Checking team membership…</div>;
   if (!user) return <Navigate to="/login" replace />;
   if (!user.emailVerified) return <Navigate to="/send-email" replace />;
+  if (state === "error") return <div role="alert" className="p-8 text-center"><p>Could not check team membership. Please try again.</p><button className="mt-4 underline" onClick={() => setAttempt((value) => value + 1)}>Retry</button></div>;
   if (state === "team") return <Navigate to="/teams" replace />;
   return <>{children}</>;
 };
@@ -82,6 +93,7 @@ const AppContent: React.FC = () => {
         <Route path="challenges/edit" element={<Navigate to="/admin/challenges" replace />} />
         <Route path="event" element={<EventSettings />} />
         <Route path="teams" element={<TeamsAdmin />} />
+        <Route path="users" element={<UsersAdmin />} />
         <Route path="logs" element={<LogsAdmin />} />
         <Route path="content" element={<ContentAdmin />} />
         <Route path="*" element={<Navigate to="/admin/dashboard" replace />} />

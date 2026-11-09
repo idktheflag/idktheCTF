@@ -9,7 +9,7 @@ import * as schema from "../db/schema";
 export const teamMiddleware: MiddlewareHandler<{
   Bindings: Bindings;
   Variables: JwtVariables;
-}> = async (c: Context, next) => {
+}> = async (c, next) => {
   if (c.get("jwtPayload").isAdmin) return next();
   const userId = c.get("jwtPayload").userId;
   const membership = await getDB(c).select({ id: schema.teamMembers.id, banned: schema.teams.isBanned })

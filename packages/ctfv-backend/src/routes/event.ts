@@ -9,6 +9,7 @@ import { authMiddleware } from "../middlewares/auth";
 import { writeAudit } from "../utils/audit";
 import { createSecureToken, sha256Hex } from "../utils/secure-token";
 import { sendRegistrationInvitation } from "../utils/send-mail";
+import { readJsonRecord } from "../utils/json-input";
 
 const router = new Hono<{ Bindings: Bindings; Variables: JwtVariables }>();
 
@@ -18,9 +19,10 @@ router.get("/invitations", authMiddleware, adminMiddleware, async (c) => {
 });
 
 router.post("/invitations", authMiddleware, adminMiddleware, async (c) => {
-  const input = await c.req.json<{ email?: unknown }>().catch((): { email?: unknown } => ({}));
-  const email = typeof input.email === "string" ? input.email.trim().toLowerCase().slice(0, 254) : "";
-  if (!/^\S+@\S+\.\S+$/.test(email)) return c.json({ error: "Enter a valid email address" }, 400);
+  const input = await readJsonRecord(c.req);
+  if (!input) return c.json({ error: "Send a valid JSON object" }, 400);
+  const email = typeof input.email === "string" ? input.email.trim().toLowerCase() : "";
+  if (email.length > 254 || !/^\S+@\S+\.\S+$/.test(email)) return c.json({ error: "Enter a valid email address" }, 400);
   const event = await getDB(c).query.eventSettings.findFirst();
   if (!event) return c.json({ error: "Event is not configured" }, 404);
   const domains = JSON.parse(event.allowedEmailDomains) as string[];
@@ -56,9 +58,15 @@ router.get("/settings", authMiddleware, adminMiddleware, async (c) => {
 
 router.put("/settings", authMiddleware, adminMiddleware, async (c) => {
   const db = getDB(c);
-  const input = await c.req.json<Record<string, unknown>>();
+  const input = await readJsonRecord(c.req);
+  if (!input) return c.json({ error: "Send a valid JSON object" }, 400);
   const current = await db.query.eventSettings.findFirst();
   if (!current) return c.json({ error: "Event not configured" }, 404);
+  for (const key of ["startsAt", "endsAt", "scoreboardFrozenAt"] as const) {
+    if (input[key] !== undefined && input[key] !== null && typeof input[key] !== "string") return c.json({ error: `${key} must be a date string or null` }, 400);
+  }
+  if (input.timezone !== undefined && typeof input.timezone !== "string") return c.json({ error: "Timezone must be an IANA zone string" }, 400);
+  if (input.maxTeamSize !== undefined && typeof input.maxTeamSize !== "number" && typeof input.maxTeamSize !== "string") return c.json({ error: "Maximum team size must be a number" }, 400);
   const startsAt = input.startsAt === undefined ? current.startsAt : input.startsAt ? new Date(String(input.startsAt)) : null;
   const endsAt = input.endsAt === undefined ? current.endsAt : input.endsAt ? new Date(String(input.endsAt)) : null;
   if ((startsAt && !Number.isFinite(startsAt.getTime())) || (endsAt && !Number.isFinite(endsAt.getTime())) || (startsAt && endsAt && startsAt >= endsAt)) return c.json({ error: "Event end must be later than its start" }, 400);

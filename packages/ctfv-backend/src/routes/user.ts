@@ -1,5 +1,5 @@
 import bcrypt from "bcryptjs";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, lte, or } from "drizzle-orm";
 import { Hono } from "hono";
 import { JwtVariables, sign, verify } from "hono/jwt";
 
@@ -10,6 +10,8 @@ import { authMiddleware } from "../middlewares/auth";
 import { isRateLimited } from "../utils/rate-limit";
 import { createSecureToken, sha256Hex } from "../utils/secure-token";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../utils/send-mail";
+import { readJsonRecord } from "../utils/json-input";
+import { isUniqueConstraintError } from "../utils/sqlite-error";
 
 type Variables = JwtVariables;
 
@@ -18,13 +20,16 @@ const userRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 userRouter.post("/auth/register", async (c) => {
   try {
     const db = getDB(c);
-    const { email, password, username, invitationToken } = await c.req.json();
+    const input = await readJsonRecord(c.req);
+    if (!input) return c.json({ error: "Send a valid JSON object" }, 400);
+    const { email, password, username, invitationToken } = input;
     const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+    if (await isRateLimited(c, c.env.AUTH_REGISTRATION_LIMITER, "registration", normalizedEmail)) return c.json({ error: "Too many registration attempts. Wait a minute and try again." }, 429);
     const ownerEmail = c.env.OWNER_EMAIL?.trim().toLowerCase();
     const isOwnerAccount = Boolean(ownerEmail && normalizedEmail === ownerEmail);
     const requestedUsername = typeof username === "string" ? username.trim() : "";
-    if (!/^\S+@\S+\.\S+$/.test(normalizedEmail) || (!isOwnerAccount && (requestedUsername.length < 2 || requestedUsername.length > 40)) || typeof password !== "string" || password.length < 12) {
-      return c.json({ error: "Enter a valid email, a username of 2–40 characters, and a password of at least 12 characters" }, 400);
+    if (normalizedEmail.length > 254 || !/^\S+@\S+\.\S+$/.test(normalizedEmail) || (!isOwnerAccount && (requestedUsername.length < 2 || requestedUsername.length > 40)) || typeof password !== "string" || password.length < 12 || new TextEncoder().encode(password).length > 72) {
+      return c.json({ error: "Enter a valid email, a username of 2–40 characters, and a password of at least 12 characters and at most 72 UTF-8 bytes" }, 400);
     }
     const normalizedUsername = isOwnerAccount ? `organizer_${crypto.randomUUID()}` : requestedUsername;
 
@@ -49,13 +54,12 @@ userRouter.post("/auth/register", async (c) => {
 
     if (!c.env.AUTH_SECRET) return c.json({ error: "Authentication is not configured" }, 503);
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-
     let newUser: typeof schema.users.$inferSelect | undefined;
     if (typeof invitationToken === "string" && !isOwnerAccount) {
       const tokenHash = await sha256Hex(invitationToken);
       const invitation = await c.env.DATABASE.prepare("SELECT id, email FROM registration_invitations WHERE token_hash = ? AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ?").bind(tokenHash, Date.now()).first<{ id: string; email: string }>();
       if (!invitation || invitation.email !== normalizedEmail) return c.json({ error: "Invitation is invalid, expired, or belongs to a different email." }, 400);
+      const hashedPassword = await bcrypt.hash(password, 10);
       const now = Date.now();
       const results = await c.env.DATABASE.batch([
         c.env.DATABASE.prepare("UPDATE registration_invitations SET redeemed_at = ? WHERE id = ? AND token_hash = ? AND email = ? AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > ?").bind(now, invitation.id, tokenHash, normalizedEmail, now),
@@ -64,6 +68,7 @@ userRouter.post("/auth/register", async (c) => {
       if (!results[0]?.meta.changes || !results[1]?.meta.changes) return c.json({ error: "Invitation was already used or is no longer valid." }, 400);
       newUser = await db.query.users.findFirst({ where: eq(schema.users.email, normalizedEmail) });
     } else {
+      const hashedPassword = await bcrypt.hash(password, 10);
       newUser = await db.insert(schema.users).values({ email: normalizedEmail, password: hashedPassword, username: normalizedUsername, isAdmin: false }).returning().get();
     }
     if (!newUser) return c.json({ error: "Could not create account" }, 500);
@@ -71,6 +76,7 @@ userRouter.post("/auth/register", async (c) => {
     const token = await sign(
       {
         userId: newUser.id,
+        authVersion: newUser.authVersion,
         email: newUser.email,
         ...(isOwnerAccount ? {} : { username: newUser.username }),
         emailVerified: newUser.emailVerified,
@@ -82,10 +88,10 @@ userRouter.post("/auth/register", async (c) => {
 
     return c.json({ token });
   } catch (error) {
-    if (error instanceof Error && /UNIQUE constraint failed: user\.name/.test(error.message)) {
+    if (isUniqueConstraintError(error, "user.name")) {
       return c.json({ error: "That username is already in use. Choose another." }, 409);
     }
-    if (error instanceof Error && /UNIQUE constraint failed: user\.email/.test(error.message)) {
+    if (isUniqueConstraintError(error, "user.email")) {
       return c.json({ error: "An account already exists for that email." }, 409);
     }
     console.error("Participant registration failed");
@@ -95,8 +101,9 @@ userRouter.post("/auth/register", async (c) => {
 
 userRouter.post("/auth/login", async (c) => {
   const db = getDB(c);
-  const input = await c.req.json<{ email?: unknown; password?: unknown }>();
-  const normalizedEmail = typeof input.email === "string" ? input.email.trim().toLowerCase().slice(0, 254) : "";
+  const input = await readJsonRecord(c.req);
+  if (!input) return c.json({ error: "Send a valid JSON object" }, 400);
+  const normalizedEmail = typeof input.email === "string" ? input.email.trim().toLowerCase() : "";
   if (await isRateLimited(c, c.env.AUTH_LOGIN_LIMITER, "login", normalizedEmail)) {
     return c.json({ error: "Too many sign-in attempts. Wait a minute and try again." }, 429);
   }
@@ -106,9 +113,10 @@ userRouter.post("/auth/login", async (c) => {
     where: eq(schema.users.email, normalizedEmail),
   });
 
-  if (!user || typeof password !== "string" || !(await bcrypt.compare(password, user.password))) {
+  if (!user || typeof password !== "string" || new TextEncoder().encode(password).length > 72 || !(await bcrypt.compare(password, user.password))) {
     return c.json({ error: "Invalid credentials" }, 401);
   }
+  if (user.isBanned) return c.json({ error: "Account is unavailable" }, 403);
 
   const ownerEmail = c.env.OWNER_EMAIL?.trim().toLowerCase();
   let isAdmin = user.isAdmin;
@@ -124,6 +132,7 @@ userRouter.post("/auth/login", async (c) => {
   const token = await sign(
     {
       userId: user.id,
+      authVersion: user.authVersion,
       email: user.email,
       ...(isAdmin || (ownerEmail && user.email.trim().toLowerCase() === ownerEmail) ? {} : { username: user.username }),
       isAdmin,
@@ -142,14 +151,14 @@ userRouter.post("/auth/password-reset/request", async (c) => {
   let email = "";
   try {
     const input = await c.req.json<{ email?: unknown }>();
-    if (typeof input.email === "string") email = input.email.trim().toLowerCase().slice(0, 254);
+    if (typeof input.email === "string") email = input.email.trim().toLowerCase();
   } catch {
     return c.json({ message: passwordResetMessage });
   }
   if (await isRateLimited(c, c.env.AUTH_RECOVERY_LIMITER, "password-reset-request", email || "invalid")) {
     return c.json({ error: "Too many requests. Wait a minute and try again." }, 429);
   }
-  if (!/^\S+@\S+\.\S+$/.test(email)) return c.json({ message: passwordResetMessage });
+  if (email.length > 254 || !/^\S+@\S+\.\S+$/.test(email)) return c.json({ message: passwordResetMessage });
 
   const account = await getDB(c).select({ id: schema.users.id, email: schema.users.email })
     .from(schema.users).where(eq(schema.users.email, email)).get();
@@ -160,7 +169,6 @@ userRouter.post("/auth/password-reset/request", async (c) => {
   const now = Date.now();
   await c.env.DATABASE.batch([
     c.env.DATABASE.prepare("DELETE FROM password_reset_tokens WHERE expires_at <= ? OR used_at IS NOT NULL").bind(now),
-    c.env.DATABASE.prepare("DELETE FROM password_reset_tokens WHERE user_id = ?").bind(account.id),
     c.env.DATABASE.prepare("INSERT INTO password_reset_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)").bind(tokenHash, account.id, now + 30 * 60 * 1000),
   ]);
   try {
@@ -185,15 +193,18 @@ userRouter.post("/auth/password-reset/complete", async (c) => {
   if (await isRateLimited(c, c.env.AUTH_RECOVERY_LIMITER, "password-reset-complete", tokenIdentity)) {
     return c.json({ error: "Too many attempts. Wait a minute and try again." }, 429);
   }
-  if (!/^[a-f0-9]{64}$/i.test(token) || typeof password !== "string" || password.length < 12) {
-    return c.json({ error: "This reset link is invalid or expired, or the new password is too short." }, 400);
+  if (!/^[a-f0-9]{64}$/i.test(token) || typeof password !== "string" || password.length < 12 || new TextEncoder().encode(password).length > 72) {
+    return c.json({ error: "This reset link is invalid or expired, or the password must be at least 12 characters and at most 72 UTF-8 bytes." }, 400);
   }
 
   const tokenHash = await sha256Hex(token);
+  const activeToken = await c.env.DATABASE.prepare("SELECT 1 AS active FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?")
+    .bind(tokenHash, Date.now()).first();
+  if (!activeToken) return c.json({ error: "This reset link is invalid or expired. Request a new one." }, 400);
   const passwordHash = await bcrypt.hash(password, 10);
   const now = Date.now();
   const results = await c.env.DATABASE.batch([
-    c.env.DATABASE.prepare("UPDATE user SET password = ? WHERE id = (SELECT user_id FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?)").bind(passwordHash, tokenHash, now),
+    c.env.DATABASE.prepare("UPDATE user SET password = ?, auth_version = auth_version + 1, lastVerificationEmailSent = NULL WHERE id = (SELECT user_id FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?)").bind(passwordHash, tokenHash, now),
     c.env.DATABASE.prepare("UPDATE password_reset_tokens SET used_at = ? WHERE user_id = (SELECT user_id FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?) AND used_at IS NULL").bind(now, tokenHash, now),
   ]);
   if (!results[0]?.meta.changes) return c.json({ error: "This reset link is invalid or expired. Request a new one." }, 400);
@@ -202,7 +213,11 @@ userRouter.post("/auth/password-reset/complete", async (c) => {
 
 userRouter.post("/auth/send-verify-email", async (c) => {
   const db = getDB(c);
-  const { email } = await c.req.json();
+  const input = await readJsonRecord(c.req);
+  if (!input) return c.json({ error: "Send a valid JSON object" }, 400);
+  const email = typeof input.email === "string" ? input.email.trim().toLowerCase() : "";
+  if (email.length > 254 || !/^\S+@\S+\.\S+$/.test(email)) return c.json({ error: "Enter a valid email address" }, 400);
+  if (await isRateLimited(c, c.env.AUTH_RECOVERY_LIMITER, "verification-email", email)) return c.json({ error: "Too many requests. Wait a minute and try again." }, 429);
 
   const user = await db.query.users.findFirst({
     where: eq(schema.users.email, email),
@@ -218,78 +233,92 @@ userRouter.post("/auth/send-verify-email", async (c) => {
 
   if (
     user.lastVerificationEmailSent &&
-    user.lastVerificationEmailSent.getTime() > Date.now() - 24 * 60 * 60 * 1000
+    user.lastVerificationEmailSent.getTime() > Date.now() - 60 * 1000
   ) {
-    return c.json({ error: "Email already sent, wait 24 hours!" }, 400);
+    c.header("Retry-After", "60");
+    return c.json({ error: "A verification email was recently requested. Wait a minute before trying again." }, 429);
   }
 
-  const emailSent = await sendVerificationEmail(c, user.email, user.id);
-
-  if (emailSent) {
-    await db
-      .update(schema.users)
-      .set({ lastVerificationEmailSent: new Date() })
-      .where(eq(schema.users.id, user.id))
-      .run();
-    return c.json({ message: "Verification email sent" });
+  const reservedAt = new Date();
+  const reserved = await db.update(schema.users).set({ lastVerificationEmailSent: reservedAt })
+    .where(and(eq(schema.users.id, user.id), eq(schema.users.emailVerified, false), eq(schema.users.isBanned, false), eq(schema.users.authVersion, user.authVersion),
+      or(isNull(schema.users.lastVerificationEmailSent), lte(schema.users.lastVerificationEmailSent, new Date(reservedAt.getTime() - 60_000)))))
+    .returning({ id: schema.users.id }).get();
+  if (!reserved) {
+    c.header("Retry-After", "60");
+    return c.json({ error: "A verification request is already pending or the account changed. Wait a minute before trying again." }, 429);
   }
+  const releaseReservation = () => db.update(schema.users).set({ lastVerificationEmailSent: null })
+    .where(and(eq(schema.users.id, user.id), eq(schema.users.authVersion, user.authVersion), eq(schema.users.lastVerificationEmailSent, reservedAt))).run();
+  let emailSent: Awaited<ReturnType<typeof sendVerificationEmail>>;
+  try {
+    emailSent = await sendVerificationEmail(c, user.email, user.id, user.authVersion);
+  } catch {
+    await releaseReservation();
+    return c.json({ error: "Verification email could not be sent. Please try again in a minute." }, 503);
+  }
+  if (emailSent) return c.json({ message: "Verification email sent" });
+  await releaseReservation();
+  return c.json({ error: "Account changed. Request a new verification email." }, 409);
 
-  return c.json({ error: "Failed to send verification email" }, 500);
 });
 
 userRouter.get("/auth/verify-email", async (c) => {
   const db = getDB(c);
   const emailToken = c.req.query("token") as string;
-  try {
-    const decoded = (await verify(emailToken, c.env.AUTH_SECRET)) as {
-      id: string;
-    };
+  let decoded: Awaited<ReturnType<typeof verify>>;
+  try { decoded = await verify(emailToken, c.env.AUTH_SECRET, "HS256"); }
+  catch { return c.json({ error: "Invalid or expired token." }, 400); }
+  if (decoded.purpose !== "email-verification" || typeof decoded.id !== "string" || !Number.isSafeInteger(decoded.authVersion) || typeof decoded.exp !== "number") return c.json({ error: "Invalid or expired token. Request a new verification email." }, 400);
 
-    const ownerEmail = c.env.OWNER_EMAIL?.trim().toLowerCase();
-    const account = await db.select({ email: schema.users.email })
-      .from(schema.users)
-      .where(eq(schema.users.id, decoded.id))
-      .get();
-    if (!account) return c.json({ error: "Account not found" }, 404);
-    const isOwner = Boolean(ownerEmail && account.email.trim().toLowerCase() === ownerEmail);
-    const updatedUser = await db
-      .update(schema.users)
-      .set({
-        emailVerified: true,
-        ...(isOwner ? { isAdmin: true } : {}),
-      })
-      .where(eq(schema.users.id, decoded.id))
-      .returning({
-        id: schema.users.id,
-        username: schema.users.username,
-        email: schema.users.email,
-        isAdmin: schema.users.isAdmin,
-        emailVerified: schema.users.emailVerified,
-      });
+  const ownerEmail = c.env.OWNER_EMAIL?.trim().toLowerCase();
+  const account = await db.select({ email: schema.users.email })
+    .from(schema.users)
+    .where(eq(schema.users.id, decoded.id))
+    .get();
+  if (!account) return c.json({ error: "Account not found" }, 404);
+  const isOwner = Boolean(ownerEmail && account.email.trim().toLowerCase() === ownerEmail);
+  const updatedUser = await db
+    .update(schema.users)
+    .set({
+      emailVerified: true,
+      ...(isOwner ? { isAdmin: true } : {}),
+    })
+    .where(and(eq(schema.users.id, decoded.id), eq(schema.users.emailVerified, false), eq(schema.users.isBanned, false), eq(schema.users.authVersion, decoded.authVersion as number)))
+    .returning({
+      id: schema.users.id,
+      username: schema.users.username,
+      email: schema.users.email,
+      isAdmin: schema.users.isAdmin,
+      emailVerified: schema.users.emailVerified,
+      authVersion: schema.users.authVersion,
+    });
 
-    if (!updatedUser[0]) return c.json({ error: "Account not found" }, 404);
-    const token = await sign(
-      {
-        userId: updatedUser[0].id,
-        ...(updatedUser[0].isAdmin ? {} : { username: updatedUser[0].username }),
-        email: updatedUser[0].email,
-        isAdmin: updatedUser[0].isAdmin,
-        emailVerified: updatedUser[0].emailVerified,
-        exp: Math.floor(Date.now() / 1000) + 12 * 60 * 60,
-      },
-      c.env.AUTH_SECRET,
-    );
+  if (!updatedUser[0]) return c.json({ error: "Invalid or already used verification link. Request a new verification email." }, 400);
+  const token = await sign(
+    {
+      userId: updatedUser[0].id,
+      authVersion: updatedUser[0].authVersion,
+      ...(updatedUser[0].isAdmin ? {} : { username: updatedUser[0].username }),
+      email: updatedUser[0].email,
+      isAdmin: updatedUser[0].isAdmin,
+      emailVerified: updatedUser[0].emailVerified,
+      exp: Math.floor(Date.now() / 1000) + 12 * 60 * 60,
+    },
+    c.env.AUTH_SECRET,
+  );
 
-    return c.json({ message: "Email verified successfully!", token });
-  } catch (err) {
-    return c.json({ error: "Invalid or expired token." }, 400);
-  }
+  return c.json({ message: "Email verified successfully!", token });
 });
 
 userRouter.get("/", async (c) => {
   const db = getDB(c);
   const users = await db.query.users.findMany({
-    where: eq(schema.users.isAdmin, false),
+    where: and(
+      eq(schema.users.isAdmin, false),
+      eq(schema.users.emailVerified, true),
+      eq(schema.users.isBanned, false),
+    ),
     columns: {
       id: true,
       username: true,
@@ -327,7 +356,7 @@ userRouter.get("/:id", authMiddleware, async (c) => {
   }
   const payload = c.get("jwtPayload");
   if (user.isAdmin && !payload.isAdmin) return c.json({ error: "User not found" }, 404);
-  if (user.isAdmin || payload.username == null) {
+  if (user.isAdmin) {
     const account = await db.select({ email: schema.users.email }).from(schema.users).where(eq(schema.users.id, userId)).get();
     return c.json({ id: user.id, email: account?.email, isAdmin: user.isAdmin });
   }
@@ -342,17 +371,35 @@ userRouter.get("/:id", authMiddleware, async (c) => {
 userRouter.put("/:id", authMiddleware, async (c) => {
   const db = getDB(c);
   const userId = c.req.param("id");
-  const { rollNo, instituteName, website, affiliation, country } =
-    await c.req.json();
-
   if (userId !== c.get("jwtPayload").userId) {
     return c.json({ error: "Unauthorized" }, 403);
   }
   if (c.get("jwtPayload").isAdmin) return c.json({ error: "Organizer accounts use email and password sign-in only" }, 403);
+  const input = await readJsonRecord(c.req);
+  if (!input) return c.json({ error: "Send a valid JSON object" }, 400);
+  const limits = { rollNo: 64, instituteName: 160, website: 2048, affiliation: 160, country: 100 };
+  const updates: Partial<Pick<typeof schema.users.$inferInsert, keyof typeof limits>> = {};
+  for (const key of Object.keys(limits) as (keyof typeof limits)[]) {
+    const value = input[key];
+    if (value === undefined) continue;
+    if (value !== null && (typeof value !== "string" || value.length > limits[key])) return c.json({ error: `${key} must be text of at most ${limits[key]} characters` }, 400);
+    updates[key] = typeof value === "string" ? value.trim() : null;
+  }
+  if (!Object.keys(updates).length) return c.json({ error: "Provide at least one profile field" }, 400);
+  if (updates.website) {
+    try {
+      const website = updates.website;
+      const bareDomain = !/[\s:]/.test(website) && !website.startsWith("/") && /^[^/]+\.[^/]+(?:\/.*)?$/.test(website);
+      const url = new URL(bareDomain ? `https://${website}` : website);
+      if (!["http:", "https:"].includes(url.protocol)) return c.json({ error: "Website must use HTTP or HTTPS" }, 400);
+      if (url.username || url.password) return c.json({ error: "Website URLs must not contain login credentials" }, 400);
+      updates.website = url.href;
+    } catch { return c.json({ error: "Website must be a valid HTTP or HTTPS URL" }, 400); }
+  }
 
   const updatedUser = await db
     .update(schema.users)
-    .set({ rollNo, instituteName, website, affiliation, country })
+    .set(updates)
     .where(eq(schema.users.id, userId))
     .returning({
       id: schema.users.id,

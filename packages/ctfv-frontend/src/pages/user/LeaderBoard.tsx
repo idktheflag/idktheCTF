@@ -1,4 +1,5 @@
-﻿import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { apiFetch } from "@/lib/api";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Table,
   TableBody,
@@ -26,6 +27,7 @@ export const LeaderBoard: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryTeam[]>([]);
+  const [historyError, setHistoryError] = useState(false);
 
   useEffect(() => {
     const fetchLeaderboard = async () => {
@@ -35,7 +37,7 @@ export const LeaderBoard: React.FC = () => {
         const token = localStorage.getItem("token");
         const headers: HeadersInit = { "Content-Type": "application/json" };
         if (token) headers.Authorization = `Bearer ${token}`;
-        const response = await fetch(
+        const response = await apiFetch(
           getBackendURL() + "/api/challenges/leaderboard",
           {
             method: "GET",
@@ -71,8 +73,14 @@ export const LeaderBoard: React.FC = () => {
         );
 
         setLeaderboardData(leaderboard);
-        const historyResponse = await fetch(getBackendURL() + "/api/challenges/scoreboard-history", { headers });
-        if (historyResponse.ok) setHistory((await historyResponse.json()).teams);
+        setIsLoading(false);
+        try {
+          const historyResponse = await apiFetch(getBackendURL() + "/api/challenges/scoreboard-history", { headers });
+          if (!historyResponse.ok) throw new Error("History unavailable");
+          setHistory((await historyResponse.json()).teams);
+        } catch {
+          setHistoryError(true);
+        }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (err: any) {
         console.error("Error fetching leaderboard:", err);
@@ -105,16 +113,29 @@ export const LeaderBoard: React.FC = () => {
     );
   }
 
+  let minAt = Infinity;
+  let maxAt = -Infinity;
+  let highestScore = 0;
+  let lowestScore = 0;
+  for (const team of history) for (const point of team.points) {
+    minAt = Math.min(minAt, point.at);
+    maxAt = Math.max(maxAt, point.at);
+    highestScore = Math.max(highestScore, point.score);
+    lowestScore = Math.min(lowestScore, point.score);
+  }
+  const scoreScale = Math.max(1, highestScore - lowestScore);
+
   return (
     <div className="p-8">
       <h1 className="mb-6 text-3xl font-bold text-foreground text-foreground">
         Leaderboard
       </h1>
+      {historyError && <p role="status" className="mb-4 text-sm text-muted-foreground">Score history is unavailable. Current rankings are shown below.</p>}
       {history.length > 0 && <section className="mb-8 rounded-xl bg-card p-5 shadow bg-card">
         <h2 className="mb-3 text-xl font-semibold">Score over time</h2>
         <div className="overflow-x-auto"><svg viewBox="0 0 900 280" role="img" aria-label="Team scores over time" className="min-w-[640px] w-full">
-          {[0, 1, 2, 3, 4].map((line) => <g key={line}><line x1="52" x2="885" y1={20 + line * 55} y2={20 + line * 55} stroke="currentColor" opacity=".12" /><text x="4" y={24 + line * 55} fontSize="12" fill="currentColor" opacity=".65">{Math.round((Math.max(...history.flatMap((t) => t.points.map((p) => p.score))) || 0) * (4 - line) / 4)}</text></g>)}
-          {history.slice(0, 8).map((team, index) => { const all = history.flatMap((t) => t.points.map((p) => p.at)); const min = Math.min(...all); const max = Math.max(...all); const maxScore = Math.max(1, ...history.flatMap((t) => t.points.map((p) => p.score))); const coords = team.points.map((p) => `${52 + (max === min ? 0 : (p.at - min) / (max - min) * 833)},${240 - p.score / maxScore * 220}`).join(" "); const colors = ["#4f46e5", "#0891b2", "#16a34a", "#ea580c", "#db2777", "#7c3aed", "#ca8a04", "#0f766e"]; return <polyline key={team.teamId} points={coords} fill="none" stroke={colors[index]} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />; })}
+          {[0, 1, 2, 3, 4].map((line) => <g key={line}><line x1="52" x2="885" y1={20 + line * 55} y2={20 + line * 55} stroke="currentColor" opacity=".12" /><text x="4" y={24 + line * 55} fontSize="12" fill="currentColor" opacity=".65">{Math.round(highestScore - (highestScore - lowestScore) * line / 4)}</text></g>)}
+          {history.slice(0, 8).map((team, index) => { const coords = team.points.map((p) => `${52 + (maxAt === minAt ? 0 : (p.at - minAt) / (maxAt - minAt) * 833)},${240 - (p.score - lowestScore) / scoreScale * 220}`).join(" "); const colors = ["#4f46e5", "#0891b2", "#16a34a", "#ea580c", "#db2777", "#7c3aed", "#ca8a04", "#0f766e"]; return <polyline key={team.teamId} points={coords} fill="none" stroke={colors[index]} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />; })}
         </svg></div>
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-sm">{history.slice(0, 8).map((team, index) => <Link key={team.teamId} to={`/team/${team.teamId}`} className="hover:underline" style={{ color: ["#4f46e5", "#0891b2", "#16a34a", "#ea580c", "#db2777", "#7c3aed", "#ca8a04", "#0f766e"][index] }}>{team.teamName}</Link>)}</div>
       </section>}

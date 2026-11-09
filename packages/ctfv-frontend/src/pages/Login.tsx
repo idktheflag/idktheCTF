@@ -1,4 +1,4 @@
-﻿import {
+import {
   Card,
   CardContent,
   CardDescription,
@@ -11,7 +11,7 @@ import { Loader2 } from "lucide-react";
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { useAuth } from "../AuthContext";
+import { useAuth } from "../auth-context";
 import { Button } from "../components/ui/button";
 
 export const Login: React.FC = () => {
@@ -21,6 +21,7 @@ export const Login: React.FC = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice] = useState(() => sessionStorage.getItem("auth-notice"));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,7 +32,7 @@ export const Login: React.FC = () => {
       navigate(!account.emailVerified ? "/send-email" : account.isAdmin ? "/admin/dashboard" : "/");
     } catch (error) {
       console.error("Login failed:", error);
-      setError("Login failed. Please check your credentials and try again.");
+      setError(error instanceof Error && error.message ? error.message : "Login failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -48,6 +49,7 @@ export const Login: React.FC = () => {
         </CardDescription>
       </CardHeader>
       <CardContent>
+        {notice && <p role="status" className="mb-4 text-sm text-muted-foreground">{notice}</p>}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
             <label

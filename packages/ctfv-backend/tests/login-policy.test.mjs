@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import bcrypt from 'bcryptjs';
+import { createDatabase,loadWorker } from './helpers.mjs';
+const app=await loadWorker();
+test('login rejects banned accounts and passwords exceeding the bcrypt byte boundary',async()=>{
+  const db=createDatabase();
+  const password='x'.repeat(72);
+  db.sqlite.prepare("INSERT INTO user(id,name,email,password,emailVerified) VALUES ('p','Player','p@example.test',?,1)").run(await bcrypt.hash(password,4));
+  const login=async(value)=>app.request('/api/users/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'p@example.test',password:value})},{DATABASE:db,AUTH_SECRET:'login-policy-test-secret'});
+  const valid=await login(password);
+  assert.equal(valid.status,200);
+  assert.equal(typeof (await valid.json()).token,'string');
+  const oversized=await login(password+'wrong-suffix');
+  assert.equal(oversized.status,401);
+  assert.equal('token' in await oversized.json(),false);
+  db.sqlite.exec("UPDATE user SET is_banned=1 WHERE id='p'");
+  const banned=await login(password);
+  assert.equal(banned.status,403);
+  assert.equal('token' in await banned.json(),false);
+  db.sqlite.close();
+});

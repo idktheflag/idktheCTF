@@ -1,12 +1,22 @@
 {
   "name": "ctfv",
   "private": true,
+  "engines": { "node": ">=22.18.0" },
+  "overrides": {
+    "esbuild@<=0.24.2": "^0.28.2",
+    "@typescript-eslint/typescript-estree": { "minimatch": "^11.0.1" }
+  },
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "dev": "bun --filter \"*\" dev",
-    "build": "bun run --filter ctfv-frontend build",
-    "deploy": "bun run --filter ctfv-frontend build && bun run --filter ctfv-backend deploy"
+    "dev": "npm run dev --workspace=ctfv-backend",
+    "build": "npm run build --workspace=ctfv-frontend",
+    "test": "npm run test --workspace=ctfv-backend && npm run test --workspace=ctfv-frontend",
+    "typecheck": "npm run typecheck --workspace=ctfv-backend",
+    "lint": "npm run lint --workspace=ctfv-frontend",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run deploy:check --workspace=ctfv-backend",
+    "deploy:check": "npm run check",
+    "deploy": "npm run check && npm run deploy --workspace=ctfv-backend"
   }
 }

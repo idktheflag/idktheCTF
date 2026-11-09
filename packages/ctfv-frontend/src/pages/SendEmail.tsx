@@ -1,10 +1,11 @@
-﻿import { useAuth } from "@/AuthContext";
+import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/auth-context";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getBackendURL } from "@/lib/utils";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 
 const SendEmail = () => {
   const [resendStatus, setResendStatus] = useState<
@@ -18,7 +19,7 @@ const SendEmail = () => {
   const handleResendEmail = useCallback(async () => {
     setResendStatus("sending");
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         getBackendURL() + "/api/users/auth/send-verify-email",
         {
           method: "POST",
@@ -42,16 +43,15 @@ const SendEmail = () => {
 
   useEffect(() => {
     if (user?.emailVerified) {
-      navigate("/");
+      navigate(user.isAdmin ? "/admin/dashboard" : "/", { replace: true });
     } else if (!initialEmailSentRef.current && user?.email) {
       handleResendEmail();
       initialEmailSentRef.current = true;
     }
-  }, [user?.email, user?.emailVerified, navigate, handleResendEmail]);
+  }, [user?.email, user?.emailVerified, user?.isAdmin, navigate, handleResendEmail]);
 
   if (!user) {
-    navigate("/login");
-    return null;
+    return <Navigate to="/login" replace />;
   }
 
   return (
@@ -63,9 +63,8 @@ const SendEmail = () => {
       </CardHeader>
       <CardContent>
         <p className="mb-4 text-center">
-          We've sent a verification email to <strong>{user.email}</strong>.
-          Please check your inbox and click the verification link to complete
-          your registration.
+          {resendStatus === "sent" ? "A verification email was accepted for delivery to " : resendStatus === "sending" ? "Sending a verification email to " : "Request a verification email for "}<strong>{user.email}</strong>.
+          {resendStatus === "sent" && " Check your inbox and spam folder, then follow the link to complete registration."}
         </p>
         {resendStatus === "sent" && (
           <Alert className="mb-4">

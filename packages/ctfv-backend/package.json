@@ -3,28 +3,27 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
+    "deploy:check": "wrangler deploy --dry-run",
+    "test": "node --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css}\"",
     "generate": "drizzle-kit generate",
     "migration:local": "wrangler d1 migrations apply ctfV-db --local",
-    "migration:remote": "wrangler d1 migrations apply ctfV-db --remote",
-    "clean": "rm -rf .wrangler",
-    "clean-migrations": "rm -rf drizzle",
-    "populate:local": "wrangler d1 execute ctfV-db --file=./src/db/populate.sql"
+    "migration:remote": "wrangler d1 migrations apply ctfV-db --remote"
   },
   "dependencies": {
-    "@auth/core": "^0.35.0",
-    "@auth/drizzle-adapter": "^1.5.0",
-    "@hono/auth-js": "^1.0.10",
     "bcryptjs": "^2.4.3",
-    "drizzle-kit": "^0.24.2",
-    "drizzle-orm": "^0.33.0",
-    "hono": "^4.6.2"
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.17",
+    "re2js": "^2.9.1"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20240529.0",
+    "@cloudflare/workers-types": "^5.20261109.1",
     "@trivago/prettier-plugin-sort-imports": "^4.3.0",
     "@types/bcryptjs": "^2.4.6",
+    "drizzle-kit": "^0.31.11",
+    "esbuild": "^0.28.2",
     "prettier": "^3.3.3",
-    "wrangler": "^4.20.0"
+    "wrangler": "^4.159.0"
   }
 }

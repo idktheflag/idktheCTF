@@ -29,8 +29,8 @@
     --chart-4: 0 0% 94%;
     --chart-5: 240 10% 35%;
     --radius: 0.75rem;
-    --font-sans: "Inter", sans-serif;
-    --font-mono: "JetBrains Mono", monospace;
+    --font-sans: "Inter Variable", sans-serif;
+    --font-mono: "JetBrains Mono Variable", monospace;
   }
   .dark {
     --background: 240 13% 4%;

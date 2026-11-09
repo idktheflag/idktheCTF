@@ -8,7 +8,7 @@ type Variables = JwtVariables;
 export const adminMiddleware: MiddlewareHandler<{
   Bindings: Bindings;
   Variables: Variables;
-}> = async (c: Context, next) => {
+}> = async (c, next) => {
   const jwtPayload = c.get("jwtPayload");
 
   if (!jwtPayload || !jwtPayload.isAdmin) {

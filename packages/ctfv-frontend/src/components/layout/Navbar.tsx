@@ -1,4 +1,5 @@
-﻿import { User, useAuth } from "@/AuthContext";
+import type { User } from "@/AuthContext";
+import { useAuth } from "@/auth-context";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,

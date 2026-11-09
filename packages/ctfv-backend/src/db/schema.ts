@@ -8,6 +8,7 @@ export const users = sqliteTable("user", {
   username: text("name").notNull().unique(),
   email: text("email").unique().notNull(),
   password: text("password").notNull(),
+  authVersion: integer("auth_version").notNull().default(0),
   rollNo: text("rollNo"),
   instituteName: text("instituteName"),
   image: text("image"),
@@ -60,6 +61,7 @@ export const challenges = sqliteTable("challenges", {
   category: text("category").notNull(),
   author: text("author").notNull(),
   flag: text("flag").notNull(),
+  flagVersion: integer("flag_version").notNull().default(0),
   date: text("date"),
   isVisible: integer("is_visible", { mode: "boolean" }).notNull().default(true),
   maxAttempts: integer("max_attempts"),
@@ -81,7 +83,13 @@ export const submissions = sqliteTable("submissions", {
     .default(sql`(current_timestamp)`),
   isCorrect: integer("isCorrect", { mode: "boolean" }).notNull(),
   teamId: text("teamId"),
-});
+}, (table) => ({
+  timestampIndex: index("submissions_timestamp_idx").on(table.timestamp),
+  teamTimestampIndex: index("submissions_team_timestamp_idx").on(table.teamId, table.timestamp),
+  teamChallengeTimestampIndex: index("submissions_team_challenge_timestamp_idx").on(table.teamId, table.challengeId, table.timestamp),
+  userTimestampIndex: index("submissions_user_timestamp_idx").on(table.userId, table.timestamp),
+  challengeTimestampIndex: index("submissions_challenge_timestamp_idx").on(table.challengeId, table.timestamp),
+}));
 
 export const eventSettings = sqliteTable("event_settings", {
   id: integer("id").primaryKey().default(1),
@@ -216,4 +224,13 @@ export const attachmentUploadParts = sqliteTable("attachment_upload_parts", {
 }, (table) => ({
   sessionPartUnique: uniqueIndex("attachment_upload_parts_session_part_idx").on(table.sessionId, table.partNumber),
   sessionIndex: index("attachment_upload_parts_session_idx").on(table.sessionId),
+}));
+
+export const r2CleanupJobs = sqliteTable("r2_cleanup_jobs", {
+  objectKey: text("object_key").primaryKey(),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: integer("next_attempt_at").notNull().default(0),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql`(current_timestamp)`),
+}, (table) => ({
+  nextAttemptIndex: index("r2_cleanup_jobs_next_attempt_idx").on(table.nextAttemptAt),
 }));

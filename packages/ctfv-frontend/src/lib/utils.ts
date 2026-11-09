@@ -17,7 +17,7 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function getBackendURL() {
-  return import.meta.env.VITE_BACKEND_URL || "";
+  return "";
 }
 
 export function localInputToUtc(value: string, timeZone: string) {
@@ -33,7 +33,9 @@ export function localInputToUtc(value: string, timeZone: string) {
     const rendered = Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day), Number(values.hour), Number(values.minute));
     candidate -= rendered - candidate - (wallClock - candidate);
   }
-  return new Date(candidate).toISOString();
+  const result = new Date(candidate).toISOString();
+  if (utcToLocalInput(result, timeZone) !== value) throw new Error("This local time does not exist in the selected timezone. Choose a time outside the daylight-saving clock change.");
+  return result;
 }
 
 export function utcToLocalInput(value: string | null, timeZone: string) {

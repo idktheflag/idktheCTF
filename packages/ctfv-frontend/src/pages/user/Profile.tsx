@@ -1,4 +1,5 @@
-﻿import { useAuth } from "@/AuthContext";
+import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/auth-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -30,7 +31,7 @@ export const Profile: React.FC = () => {
     const fetchProfile = async () => {
       if (user && !user.isAdmin) {
         try {
-          const response = await fetch(
+          const response = await apiFetch(
             getBackendURL() + `/api/users/${user.userId}`,
             {
               headers: {
@@ -47,7 +48,6 @@ export const Profile: React.FC = () => {
             setWebsite(data.website || "");
             setAffiliation(data.affiliation || "");
             setCountry(data.country || "");
-            console.log(data);
           } else {
             console.error("Failed to fetch profile");
           }
@@ -68,7 +68,7 @@ export const Profile: React.FC = () => {
     e.preventDefault();
     if (user) {
       try {
-        const response = await fetch(
+        const response = await apiFetch(
           getBackendURL() + `/api/users/${user.userId}`,
           {
             method: "PUT",

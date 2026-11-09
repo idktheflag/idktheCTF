@@ -1,6 +1,7 @@
 ﻿import { and, asc, eq, lt } from "drizzle-orm";
 import { Context, Hono } from "hono";
 import { JwtVariables } from "hono/jwt";
+import { bodyLimit } from "hono/body-limit";
 import { getDB } from "..";
 import { Bindings } from "../../env";
 import * as schema from "../db/schema";
@@ -8,6 +9,7 @@ import { adminMiddleware } from "../middlewares/admin";
 import { authMiddleware } from "../middlewares/auth";
 import { teamMiddleware } from "../middlewares/team";
 import { writeAudit } from "../utils/audit";
+import { readJsonRecord } from "../utils/json-input";
 
 const router = new Hono<{ Bindings: Bindings; Variables: JwtVariables }>();
 const allowedTypes = new Set(["application/zip", "application/x-zip-compressed", "application/gzip", "application/pdf", "text/plain", "application/octet-stream", "image/png", "image/jpeg"]);
@@ -19,22 +21,36 @@ const MAX_R2_OBJECT_SIZE = 5 * 1024 ** 4 - 5 * 1024 ** 3;
 
 const eventAllowsFiles = async (c: { env: Bindings }) => {
   const event = await c.env.DATABASE.prepare("SELECT starts_at, ends_at, view_challenges_after_end FROM event_settings WHERE id = 1").first() as { starts_at: number | null; ends_at: number | null; view_challenges_after_end: number } | null;
-  return !event || ((!event.starts_at || Date.now() >= event.starts_at) && (!event.ends_at || Date.now() <= event.ends_at || Boolean(event.view_challenges_after_end)));
+  return Boolean(event && (!event.starts_at || Date.now() >= event.starts_at) && (!event.ends_at || Date.now() <= event.ends_at || Boolean(event.view_challenges_after_end)));
 };
 
 const sanitizeFilename = (name: string) => name.split(/[\\/]/).pop()?.replace(/[\r\n\x00-\x1f]/g, "_").slice(0, 180) || "attachment";
+
+async function discardUpload(c: Context<{ Bindings: Bindings; Variables: JwtVariables }>, session: typeof schema.attachmentUploads.$inferSelect) {
+  const db = getDB(c);
+  // Claim cleanup in D1 before touching R2. Finalization only accepts live sessions.
+  const claimed = await db.update(schema.attachmentUploads).set({ expiresAt: new Date(0) })
+    .where(and(eq(schema.attachmentUploads.id, session.id), eq(schema.attachmentUploads.ownerId, session.ownerId))).returning().get();
+  if (!claimed) return false;
+  try { await c.env.FILES.resumeMultipartUpload(claimed.objectKey, claimed.uploadId).abort(); } catch { /* Completion or R2 expiry may already have removed the multipart session. */ }
+  // A completed object may remain after a retryable D1 finalization failure.
+  // Keep the expired row if R2 cleanup fails so cancellation/pruning can retry.
+  await c.env.FILES.delete(claimed.objectKey);
+  await db.delete(schema.attachmentUploads).where(and(eq(schema.attachmentUploads.id, claimed.id), eq(schema.attachmentUploads.expiresAt, new Date(0))));
+  return true;
+}
 
 async function pruneExpiredUploads(c: Context<{ Bindings: Bindings; Variables: JwtVariables }>) {
   const db = getDB(c);
   const expired = await db.select().from(schema.attachmentUploads).where(lt(schema.attachmentUploads.expiresAt, new Date())).limit(25);
   for (const session of expired) {
-    try { await c.env.FILES.resumeMultipartUpload(session.objectKey, session.uploadId).abort(); } catch { /* R2 expires abandoned multipart uploads after seven days. */ }
-    await db.delete(schema.attachmentUploads).where(eq(schema.attachmentUploads.id, session.id));
+    await discardUpload(c, session);
   }
 }
 
 router.post("/multipart", authMiddleware, adminMiddleware, async (c) => {
-  const input = await c.req.json<{ challengeId?: string; filename?: string; contentType?: string; size?: number }>();
+  const input = await readJsonRecord(c.req);
+  if (!input) return c.json({ error: "Send a valid JSON object" }, 400);
   const challengeId = typeof input.challengeId === "string" ? input.challengeId : "";
   const filename = sanitizeFilename(typeof input.filename === "string" ? input.filename : "");
   const declaredType = typeof input.contentType === "string" ? input.contentType : "";
@@ -72,15 +88,14 @@ router.get("/multipart/:id", authMiddleware, adminMiddleware, async (c) => {
   const session = await getDB(c).select().from(schema.attachmentUploads).where(eq(schema.attachmentUploads.id, c.req.param("id"))).get();
   if (!session || session.ownerId !== c.get("jwtPayload").userId) return c.json({ error: "Upload session not found" }, 404);
   if (session.expiresAt.getTime() <= Date.now()) {
-    try { await c.env.FILES.resumeMultipartUpload(session.objectKey, session.uploadId).abort(); } catch { /* The R2 multipart upload may already have expired. */ }
-    await getDB(c).delete(schema.attachmentUploads).where(eq(schema.attachmentUploads.id, session.id));
+    await discardUpload(c, session);
     return c.json({ error: "Upload session expired. Start the upload again." }, 410);
   }
   const parts = await getDB(c).select({ partNumber: schema.attachmentUploadParts.partNumber, etag: schema.attachmentUploadParts.etag, size: schema.attachmentUploadParts.size }).from(schema.attachmentUploadParts).where(eq(schema.attachmentUploadParts.sessionId, session.id)).orderBy(asc(schema.attachmentUploadParts.partNumber));
   return c.json({ uploadId: session.id, attachmentId: session.attachmentId, challengeId: session.challengeId, filename: session.filename, contentType: session.contentType, size: session.size, partSize: session.partSize, totalParts: Math.ceil(session.size / session.partSize), expiresAt: session.expiresAt, parts });
 });
 
-router.put("/multipart/:id/parts/:partNumber", authMiddleware, adminMiddleware, async (c) => {
+router.put("/multipart/:id/parts/:partNumber", authMiddleware, adminMiddleware, bodyLimit({ maxSize: MAX_PART_SIZE, onError: (c) => c.json({ error: "Request body is too large" }, 413) }), async (c) => {
   const session = await getDB(c).select().from(schema.attachmentUploads).where(eq(schema.attachmentUploads.id, c.req.param("id"))).get();
   if (!session || session.ownerId !== c.get("jwtPayload").userId) return c.json({ error: "Upload session not found" }, 404);
   if (session.expiresAt.getTime() <= Date.now()) return c.json({ error: "Upload session expired. Start the upload again." }, 410);
@@ -107,28 +122,35 @@ router.post("/multipart/:id/complete", authMiddleware, adminMiddleware, async (c
   if (parts.length !== expectedParts || parts.some((part, index) => part.partNumber !== index + 1 || part.size !== (index + 1 === expectedParts ? session.size - session.partSize * (expectedParts - 1) : session.partSize))) {
     return c.json({ error: "Upload is incomplete. Retry missing parts before completing." }, 409);
   }
-  const upload = c.env.FILES.resumeMultipartUpload(session.objectKey, session.uploadId);
-  await upload.complete(parts.map(({ partNumber, etag }) => ({ partNumber, etag })));
-  try {
-    const attachment = await db.insert(schema.attachments).values({
-      id: session.attachmentId, challengeId: session.challengeId, objectKey: session.objectKey,
-      filename: session.filename, contentType: session.contentType, size: session.size,
-    }).returning({ id: schema.attachments.id, filename: schema.attachments.filename, contentType: schema.attachments.contentType, size: schema.attachments.size }).get();
-    await db.delete(schema.attachmentUploads).where(eq(schema.attachmentUploads.id, session.id));
-    await writeAudit(c, { action: "attachment.created", targetType: "attachment", targetId: attachment.id, metadata: { filename: attachment.filename, size: attachment.size, challengeId: session.challengeId } });
-    return c.json({ attachment }, 201);
-  } catch (error) {
-    await c.env.FILES.delete(session.objectKey);
-    throw error;
+  // R2 completion and D1 commit are separate operations. Retain completed bytes
+  // when D1 fails so a retry can finish metadata persistence without reuploading.
+  const completed = await c.env.FILES.head(session.objectKey);
+  if (completed && completed.size !== session.size) return c.json({ error: "Completed file size does not match this upload. Start the upload again." }, 409);
+  if (!completed) {
+    const upload = c.env.FILES.resumeMultipartUpload(session.objectKey, session.uploadId);
+    await upload.complete(parts.map(({ partNumber, etag }) => ({ partNumber, etag })));
   }
+  const results = await c.env.DATABASE.batch<{ id: string; filename: string; contentType: string; size: number }>([
+    c.env.DATABASE.prepare(`INSERT INTO attachments (id, challenge_id, object_key, filename, content_type, size)
+      SELECT attachment_id, challenge_id, object_key, filename, content_type, size FROM attachment_uploads
+      WHERE id = ? AND owner_id = ? AND expires_at > ?
+      RETURNING id, filename, content_type AS contentType, size`)
+      .bind(session.id, session.ownerId, Date.now()),
+    c.env.DATABASE.prepare(`DELETE FROM attachment_uploads WHERE id = ?
+      AND EXISTS (SELECT 1 FROM attachments WHERE id = ? AND object_key = ?)`)
+      .bind(session.id, session.attachmentId, session.objectKey),
+  ]);
+  const attachment = results[0].results[0];
+  if (!attachment) return c.json({ error: "Upload was cancelled or expired. Start the upload again." }, 410);
+  await writeAudit(c, { action: "attachment.created", targetType: "attachment", targetId: attachment.id, metadata: { filename: attachment.filename, size: attachment.size, challengeId: session.challengeId } });
+  return c.json({ attachment }, 201);
 });
 
 router.delete("/multipart/:id", authMiddleware, adminMiddleware, async (c) => {
   const db = getDB(c);
   const session = await db.select().from(schema.attachmentUploads).where(eq(schema.attachmentUploads.id, c.req.param("id"))).get();
   if (!session || session.ownerId !== c.get("jwtPayload").userId) return c.json({ error: "Upload session not found" }, 404);
-  try { await c.env.FILES.resumeMultipartUpload(session.objectKey, session.uploadId).abort(); } catch { /* It may already be expired by R2. */ }
-  await db.delete(schema.attachmentUploads).where(eq(schema.attachmentUploads.id, session.id));
+  if (!(await discardUpload(c, session))) return c.json({ error: "Upload was already finalized or removed" }, 409);
   await writeAudit(c, { action: "attachment.upload_aborted", targetType: "attachment_upload", targetId: session.id, metadata: { filename: session.filename, size: session.size } });
   return c.json({ aborted: true });
 });
@@ -157,10 +179,13 @@ router.get("/:id/download", authMiddleware, teamMiddleware, async (c) => {
 router.delete("/:id", authMiddleware, adminMiddleware, async (c) => {
   const file = await getDB(c).select().from(schema.attachments).where(eq(schema.attachments.id, c.req.param("id"))).get();
   if (!file) return c.json({ error: "Attachment not found" }, 404);
-  await c.env.FILES.delete(file.objectKey);
-  await getDB(c).delete(schema.attachments).where(and(eq(schema.attachments.id, file.id), eq(schema.attachments.objectKey, file.objectKey)));
+  const db = getDB(c);
+  await db.batch([
+    db.insert(schema.r2CleanupJobs).values({ objectKey: file.objectKey }).onConflictDoNothing(),
+    db.delete(schema.attachments).where(and(eq(schema.attachments.id, file.id), eq(schema.attachments.objectKey, file.objectKey))),
+  ]);
   await writeAudit(c, { action: "attachment.deleted", targetType: "attachment", targetId: file.id, metadata: { filename: file.filename, size: file.size, challengeId: file.challengeId } });
-  return c.json({ deleted: true });
+  return c.json({ deleted: true, cleanupQueued: true });
 });
 
 export default router;

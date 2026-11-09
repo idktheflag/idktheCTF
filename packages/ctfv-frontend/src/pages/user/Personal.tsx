@@ -1,4 +1,5 @@
-﻿import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { apiFetch } from "@/lib/api";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Table,
   TableBody,
@@ -34,14 +35,16 @@ const Personal: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
     const fetchUserData = async () => {
       setIsLoading(true);
       setError(null);
       try {
-        const response = await fetch(
+        const response = await apiFetch(
           getBackendURL() + `/api/challenges/personal/${userId}`,
           {
             method: "GET",
+            signal: controller.signal,
             headers: {
               "Content-Type": "application/json",
               Authorization: `Bearer ${localStorage.getItem("token")}`,
@@ -53,18 +56,21 @@ const Personal: React.FC = () => {
         }
 
         const data = await response.json();
+        if (controller.signal.aborted) return;
         setUserData(data);
       } catch (err) {
+        if (controller.signal.aborted) return;
         console.error("Error fetching user data:", err);
         setError(
           "An error occurred while fetching user data. Please try again later.",
         );
       } finally {
-        setIsLoading(false);
+        if (!controller.signal.aborted) setIsLoading(false);
       }
     };
 
     fetchUserData();
+    return () => controller.abort();
   }, [userId]);
 
   if (isLoading) {

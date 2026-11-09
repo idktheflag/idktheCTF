@@ -1,0 +1,1 @@
+ALTER TABLE challenges ADD COLUMN flag_version INTEGER NOT NULL DEFAULT 0;

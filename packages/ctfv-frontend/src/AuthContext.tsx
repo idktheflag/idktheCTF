@@ -1,6 +1,8 @@
-﻿import { jwtDecode } from "jwt-decode";
-import React, { createContext, useContext, useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api";
+import { jwtDecode } from "jwt-decode";
+import React, { useEffect, useState } from "react";
 
+import { AuthContext } from "./auth-context";
 import { getBackendURL } from "./lib/utils";
 
 export interface User {
@@ -9,6 +11,7 @@ export interface User {
   username?: string;
   isAdmin: boolean;
   emailVerified: boolean;
+  exp: number;
 }
 
 export interface Challenge {
@@ -24,56 +27,58 @@ export interface Challenge {
   maxAttempts?: number | null;
   tags?: string[];
   flags?: { value: string; type: "static" | "regex" }[];
-  hints?: { body: string; cost: number }[];
+  hints?: { id?: string | null; body: string; cost: number }[];
   isVisible?: boolean;
 }
 
-interface AuthContextType {
-  user: User | null;
-  login: (email: string, password: string) => Promise<User>;
-  register: (name: string, email: string, password: string, invitationToken?: string) => Promise<void>;
-  logout: () => void;
-  createChallenge: (challengeData: Omit<Challenge, "id">) => Promise<Challenge>;
-  getChallenges: () => Promise<{ category: string; challenges: Challenge[] }[]>;
-  updateChallenge: (
-    id: string,
-    challengeData: Partial<Challenge>,
-  ) => Promise<void>;
-  deleteChallenge: (id: string) => Promise<void>;
-  verifyEmail: (token: string) => Promise<void>;
-  requestPasswordReset: (email: string) => Promise<string>;
-  completePasswordReset: (token: string, password: string) => Promise<string>;
+function readStoredUser(): User | null {
+  const token = localStorage.getItem("token");
+  if (!token) return null;
+  try {
+    const user = jwtDecode<User>(token);
+    if (Number.isFinite(user.exp) && user.exp * 1000 > Date.now()) return user;
+  } catch { /* Invalid saved credentials must return to sign-in. */ }
+  localStorage.removeItem("token");
+  sessionStorage.setItem("auth-notice", "Your session expired. Sign in again.");
+  return null;
 }
-
-const AuthContext = createContext<AuthContextType | null>(null);
-
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error("useAuth must be used within an AuthProvider");
-  }
-  return context;
-};
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(readStoredUser);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (token) {
-      try {
-        const decodedToken = jwtDecode<User>(token);
-        setUser(decodedToken);
-      } catch (error) {
-        console.error("Invalid token:", error);
-        localStorage.removeItem("token");
-      }
-    }
+    const expired = () => {
+      sessionStorage.setItem("auth-notice", "Your session expired or was revoked. Sign in again.");
+      localStorage.removeItem("token");
+      setUser(null);
+    };
+    window.addEventListener("ctf:session-expired", expired);
+    const synchronize = (event: StorageEvent) => {
+      if (event.key === "token") setUser(readStoredUser());
+    };
+    window.addEventListener("storage", synchronize);
+    return () => {
+      window.removeEventListener("ctf:session-expired", expired);
+      window.removeEventListener("storage", synchronize);
+    };
   }, []);
 
+
+
+  useEffect(() => {
+    if (!user) return;
+    const timeout = window.setTimeout(() => {
+      sessionStorage.setItem("auth-notice", "Your session expired. Sign in again.");
+      localStorage.removeItem("token");
+      setUser(null);
+    }, Math.max(0, Math.min(user.exp * 1000 - Date.now(), 2147483647)));
+    return () => window.clearTimeout(timeout);
+  }, [user]);
+
   const updateUserFromToken = (token: string): User => {
+    sessionStorage.removeItem("auth-notice");
     localStorage.setItem("token", token);
     const decodedToken = jwtDecode<User>(token);
     setUser(decodedToken);
@@ -81,7 +86,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const login = async (email: string, password: string): Promise<User> => {
-    const response = await fetch(getBackendURL() + "/api/users/auth/login", {
+    const response = await apiFetch(getBackendURL() + "/api/users/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
@@ -100,7 +105,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     password: string,
     invitationToken?: string,
   ) => {
-    const response = await fetch(getBackendURL() + "/api/users/auth/register", {
+    const response = await apiFetch(getBackendURL() + "/api/users/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, email, password, isAdmin: false, invitationToken }),
@@ -114,12 +119,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const logout = () => {
+    sessionStorage.removeItem("auth-notice");
     localStorage.removeItem("token");
     setUser(null);
   };
 
   const verifyEmail = async (token: string) => {
-    const response = await fetch(
+    const response = await apiFetch(
       getBackendURL() + `/api/users/auth/verify-email?token=${token}`,
       {
         method: "GET",
@@ -135,7 +141,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const requestPasswordReset = async (email: string) => {
-    const response = await fetch(getBackendURL() + "/api/users/auth/password-reset/request", {
+    const response = await apiFetch(getBackendURL() + "/api/users/auth/password-reset/request", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }),
     });
     const data = await response.json();
@@ -144,7 +150,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const completePasswordReset = async (token: string, password: string) => {
-    const response = await fetch(getBackendURL() + "/api/users/auth/password-reset/complete", {
+    const response = await apiFetch(getBackendURL() + "/api/users/auth/password-reset/complete", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, password }),
     });
     const data = await response.json();
@@ -156,7 +162,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const createChallenge = async (challengeData: Omit<Challenge, "id">) => {
     const token = localStorage.getItem("token");
-    const response = await fetch(getBackendURL() + "/api/challenges/create", {
+    const response = await apiFetch(getBackendURL() + "/api/challenges/create", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -180,7 +186,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }[]
   > => {
     const token = localStorage.getItem("token");
-    const response = await fetch(getBackendURL() + "/api/challenges/read", {
+    const response = await apiFetch(getBackendURL() + "/api/challenges/read", {
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -199,7 +205,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     challengeData: Partial<Challenge>,
   ) => {
     const token = localStorage.getItem("token");
-    const response = await fetch(
+    const response = await apiFetch(
       getBackendURL() + `/api/challenges/update/${id}`,
       {
         method: "PUT",
@@ -219,7 +225,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const deleteChallenge = async (id: string) => {
     const token = localStorage.getItem("token");
-    const response = await fetch(
+    const response = await apiFetch(
       getBackendURL() + `/api/challenges/delete/${id}`,
       {
         method: "DELETE",

@@ -2,11 +2,11 @@
 // by running `wrangler types --env-interface CloudflareEnv env.d.ts`
 
 export interface Bindings {
-	AUTH_GOOGLE_ID: string;
-	AUTH_GOOGLE_SECRET: string;
 	AUTH_SECRET: string;
 	AUTH_LOGIN_LIMITER?: RateLimit;
 	AUTH_RECOVERY_LIMITER?: RateLimit;
+	AUTH_REGISTRATION_LIMITER?: RateLimit;
+	AUTH_IP_LIMITER?: RateLimit;
 	OWNER_EMAIL?: string;
 	EMAIL_FROM: string;
 	APP_URL?: string;

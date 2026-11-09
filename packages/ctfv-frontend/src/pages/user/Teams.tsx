@@ -1,6 +1,7 @@
-﻿import React, { useCallback, useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api";
+import React, { useCallback, useEffect, useState } from "react";
 import { getBackendURL } from "@/lib/utils";
-import { useAuth } from "@/AuthContext";
+import { useAuth } from "@/auth-context";
 import { Link } from "react-router-dom";
 
 type Team = { id: string; name: string; captainId: string; joinCode?: string; memberCount?: number };
@@ -12,20 +13,26 @@ export const Teams: React.FC = () => {
   const [joinCode, setJoinCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const { user } = useAuth();
   const token = localStorage.getItem("token");
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoaded(false);
+    setError("");
     try {
       const headers = { Authorization: `Bearer ${token}` };
       const [mine, directory] = await Promise.all([
-        fetch(`${getBackendURL()}/api/teams/me`, { headers }),
-        fetch(`${getBackendURL()}/api/teams`, { headers }),
+        apiFetch(`${getBackendURL()}/api/teams/me`, { headers }),
+        apiFetch(`${getBackendURL()}/api/teams`, { headers }),
       ]);
-      if (!mine.ok || !directory.ok) throw new Error("Sign in to view teams");
-      setTeam((await mine.json()).team);
-      setTeams((await directory.json()).teams);
+      if (!mine.ok || !directory.ok) throw new Error("Could not load teams. Please try again.");
+      const membership = await mine.json();
+      const listing = await directory.json();
+      setTeam(membership.team);
+      setTeams(listing.teams);
+      setLoaded(true);
     } catch (e) { setError((e as Error).message); }
     finally { setLoading(false); }
   }, [token]);
@@ -34,7 +41,7 @@ export const Teams: React.FC = () => {
 
   const mutate = async (path: string, body: object) => {
     setError("");
-    const response = await fetch(`${getBackendURL()}/api/teams${path}`, {
+    const response = await apiFetch(`${getBackendURL()}/api/teams${path}`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body),
     });
     const data = await response.json();
@@ -44,7 +51,8 @@ export const Teams: React.FC = () => {
 
   if (!user) return <p className="p-8">Please <Link className="text-primary underline" to="/login">log in</Link> to join a team.</p>;
   if (!user.emailVerified) return <p className="p-8">Verify your email before joining a team. <Link className="text-primary underline" to="/send-email">Send verification email</Link>.</p>;
-  if (loading) return <p className="p-8">Loading teamsâ€¦</p>;
+  if (loading) return <p className="p-8">Loading teams…</p>;
+  if (!loaded) return <div role="alert" className="p-8"><p>{error || "Could not load teams."}</p><button className="mt-4 underline" onClick={() => void load()}>Retry</button></div>;
   return (
     <main className="mx-auto max-w-4xl p-4 text-foreground text-foreground">
       <h1 className="mb-2 text-3xl font-bold">Teams</h1>
