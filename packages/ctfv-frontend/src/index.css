@@ -77,3 +77,14 @@
     background: #8e1622;
   }
 }
+
+@keyframes countdown-roll {
+  from { transform: translateY(-50%); }
+  to { transform: translateY(0); }
+}
+.countdown-reel {
+  animation: countdown-roll 450ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .countdown-reel { animation: none; }
+}
